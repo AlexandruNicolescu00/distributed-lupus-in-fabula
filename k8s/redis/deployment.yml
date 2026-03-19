@@ -1,0 +1,139 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Redis viene deployato come singola replica con PersistentVolumeClaim.
+# In produzione valutare Redis Sentinel o Redis Cluster per alta disponibilità.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: game
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: game-platform
+spec:
+  replicas: 1       # Redis stateful: una sola replica primaria
+  selector:
+    matchLabels:
+      app: redis
+  strategy:
+    type: Recreate  # Recreate invece di RollingUpdate: evita due istanze Redis
+                    # contemporanee che scrivono sullo stesso PVC
+  template:
+    metadata:
+      labels:
+        app: redis
+      annotations:
+        # Prometheus scraping via redis-exporter (sidecar o deployment separato)
+        prometheus.io/scrape: "false"   # Redis stesso non espone /metrics
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.2-alpine
+          ports:
+            - containerPort: 6379
+              name: redis
+          command:
+            - redis-server
+            - /usr/local/etc/redis/redis.conf
+          volumeMounts:
+            - name: redis-config
+              mountPath: /usr/local/etc/redis
+              readOnly: true
+            - name: redis-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu:    "100m"
+              memory: "128Mi"
+            limits:
+              cpu:    "500m"
+              memory: "512Mi"
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+      volumes:
+        - name: redis-config
+          configMap:
+            name: redis-config   # vedi redis/configmap.yml
+        - name: redis-data
+          persistentVolumeClaim:
+            claimName: redis-pvc
+
+---
+# PersistentVolumeClaim per i dati Redis (RDB + AOF)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-pvc
+  namespace: game
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: game-platform
+spec:
+  accessModes:
+    - ReadWriteOnce   # un solo pod può montarlo in scrittura
+  resources:
+    requests:
+      storage: 1Gi    # dimensionare in base al dataset atteso
+
+---
+# ConfigMap con redis.conf per il container
+# (contenuto allineato con infrastructure/redis/redis.conf)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-config
+  namespace: game
+  labels:
+    app: redis
+    app.kubernetes.io/part-of: game-platform
+data:
+  redis.conf: |
+    bind 0.0.0.0
+    port 6379
+    protected-mode no
+    timeout 0
+    tcp-keepalive 60
+    tcp-backlog 511
+    maxclients 1000
+
+    # RDB
+    save 60 1
+    save 30 10
+    save 10 100
+    stop-writes-on-bgsave-error yes
+    rdbcompression yes
+    rdbchecksum yes
+    dbfilename dump.rdb
+    dir /data
+
+    # AOF
+    appendonly yes
+    appendfilename "appendonly.aof"
+    appendfsync everysec
+    no-appendfsync-on-rewrite yes
+    auto-aof-rewrite-percentage 100
+    auto-aof-rewrite-min-size 64mb
+    aof-use-rdb-preamble yes
+
+    # Memoria
+    maxmemory 256mb
+    maxmemory-policy allkeys-lru
+    maxmemory-samples 5
+
+    # Pub/Sub buffer
+    client-output-buffer-limit pubsub 32mb 8mb 60
+
+    # Logging
+    loglevel notice
+    logfile ""

@@ -1,0 +1,92 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Configurazione Prometheus per ambiente Docker Compose (produzione locale)
+# e Kubernetes.
+#
+# Metriche raccolte:
+#   - FastAPI backend     → /metrics (prometheus-fastapi-instrumentator)
+#   - Redis               → redis_exporter:9121
+#   - NGINX               → nginx_exporter:9113  (opzionale)
+#   - Prometheus stesso   → localhost:9090
+# ─────────────────────────────────────────────────────────────────────────────
+
+global:
+  scrape_interval:     15s   # quanto spesso fare scraping
+  evaluation_interval: 15s   # quanto spesso valutare le regole di alerting
+  scrape_timeout:      10s
+
+  # Label aggiunte a tutte le metriche raccolte da questa istanza
+  external_labels:
+    environment: "production"
+    project:     "game-platform"
+
+# ── File di regole per alerting ───────────────────────────────────────────────
+rule_files:
+  - "rules/backend.yml"
+  - "rules/redis.yml"
+  - "rules/infra.yml"
+
+# ── Configurazione Alertmanager (opzionale) ───────────────────────────────────
+# alerting:
+#   alertmanagers:
+#     - static_configs:
+#         - targets: ["alertmanager:9093"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SCRAPE CONFIGS
+# ══════════════════════════════════════════════════════════════════════════════
+
+scrape_configs:
+
+  # ── Prometheus stesso ──────────────────────────────────────────────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ── Backend FastAPI (Docker Compose) ──────────────────────────────────────
+  # In Docker Compose il DNS "backend" risolve tutte le repliche.
+  # Prometheus fa scraping su ciascuna via la porta 8000.
+  #
+  # prometheus-fastapi-instrumentator espone automaticamente:
+  #   http_requests_total
+  #   http_request_duration_seconds (istogramma)
+  #   http_requests_in_progress (gauge)
+  #
+  # Le metriche custom WebSocket (connessioni attive, messaggi/sec)
+  # vengono aggiunte nella Task 2.4 nel backend FastAPI.
+  - job_name: "backend"
+    static_configs:
+      - targets: ["backend:8000"]
+        labels:
+          service: "backend"
+    metrics_path: /metrics
+    scrape_interval: 10s   # più frequente per dati WS real-time
+
+  # ── Redis Exporter ─────────────────────────────────────────────────────────
+  # redis_exporter espone metriche Redis su :9121/metrics:
+  #   redis_connected_clients
+  #   redis_commands_processed_total
+  #   redis_pubsub_channels
+  #   redis_pubsub_patterns
+  #   redis_memory_used_bytes
+  #   redis_rdb_last_bgsave_status
+  #   redis_aof_enabled
+  - job_name: "redis"
+    static_configs:
+      - targets: ["redis_exporter:9121"]
+        labels:
+          service: "redis"
+    scrape_interval: 15s
+
+  # ── NGINX Exporter (opzionale) ─────────────────────────────────────────────
+  # Richiede nginx-prometheus-exporter che legge /nginx_status.
+  # Aggiungere al docker-compose.yml se necessario:
+  #   nginx_exporter:
+  #     image: nginx/nginx-prometheus-exporter:1.1.0
+  #     command: ["-nginx.scrape-uri=http://nginx/nginx_status"]
+  #     ports: ["9113:9113"]
+  #
+  # - job_name: "nginx"
+  #   static_configs:
+  #     - targets: ["nginx_exporter:9113"]
+  #       labels:
+  #         service: "nginx"

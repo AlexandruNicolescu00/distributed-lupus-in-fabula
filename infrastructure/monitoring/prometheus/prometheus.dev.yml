@@ -1,0 +1,30 @@
+# Configurazione Prometheus per sviluppo locale.
+# Backend e frontend girano sull'host → usa host.docker.internal
+# per raggiungere i processi fuori dal container.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+
+  # Backend FastAPI in esecuzione sull'host (uvicorn)
+  # Avvia il backend con: uvicorn main:app --port 8000
+  - job_name: "backend"
+    static_configs:
+      - targets:
+          - "host.docker.internal:8000"   # macOS / Windows Docker Desktop
+          # - "172.17.0.1:8000"           # Linux: IP del bridge docker0
+    metrics_path: /metrics
+
+  # Redis Exporter (gira nel compose, raggiungibile via nome servizio)
+  - job_name: "redis"
+    static_configs:
+      - targets:
+          - "redis_exporter:9121"
+
+  # Prometheus stesso
+  - job_name: "prometheus"
+    static_configs:
+      - targets:
+          - "localhost:9090"

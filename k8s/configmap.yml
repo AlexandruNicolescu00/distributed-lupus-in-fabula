@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Variabili di configurazione non sensibili condivise tra i pod.
+# Per valori sensibili (password, token) usare Secret (vedi secret.example.yml).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: game-config
+  namespace: game
+  labels:
+    app.kubernetes.io/part-of: game-platform
+data:
+  # ── App ────────────────────────────────────────────────────────────────────
+  APP_ENV: "production"
+  LOG_LEVEL: "info"
+
+  # ── Redis ──────────────────────────────────────────────────────────────────
+  # Il Service "redis" è raggiungibile internamente con questo DNS:
+  #   <service-name>.<namespace>.svc.cluster.local
+  REDIS_URL: "redis://redis.game.svc.cluster.local:6379"
+  REDIS_CHANNEL_PREFIX: "game"
+  REDIS_GLOBAL_CHANNEL: "game:global"
+
+  # ── WebSocket ──────────────────────────────────────────────────────────────
+  WS_HEARTBEAT_INTERVAL: "30"
+  WS_MAX_SIZE: "1048576"
+
+  # ── Frontend ───────────────────────────────────────────────────────────────
+  # Aggiornare con il dominio reale in produzione
+  VITE_WS_URL: "ws://localhost/ws"

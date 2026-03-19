@@ -1,0 +1,107 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress NGINX per routing del traffico esterno verso i servizi interni.
+#
+# Prerequisiti:
+#   minikube addons enable ingress
+#   # oppure su cluster reale:
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.0/deploy/static/provider/cloud/deploy.yaml
+#
+# In locale con minikube, ottenere l'IP con:
+#   minikube ip          → es. 192.168.49.2
+# Aggiungere al /etc/hosts:
+#   192.168.49.2   game.local
+#
+# Routing:
+#   game.local/ws/*  → backend:8000   (WebSocket)
+#   game.local/api/* → backend:8000   (REST)
+#   game.local/      → frontend:3000  (Vue SPA)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: game-ingress
+  namespace: game
+  labels:
+    app.kubernetes.io/part-of: game-platform
+  annotations:
+    # ── Controller ────────────────────────────────────────────────────────────
+    kubernetes.io/ingress.class: "nginx"
+
+    # ── WebSocket ─────────────────────────────────────────────────────────────
+    # Abilita il proxy WebSocket per tutti i path (non solo /ws).
+    # L'ingress controller aggiunge Upgrade e Connection automaticamente.
+    nginx.ingress.kubernetes.io/proxy-read-timeout:    "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout:    "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "15"
+
+    # Disabilita il buffering per i frame WebSocket
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+
+    # Header forwarding per il backend FastAPI
+    nginx.ingress.kubernetes.io/proxy-set-headers: "game/custom-headers"
+
+    # ── Load balancing ────────────────────────────────────────────────────────
+    # least_conn: distribuisce in base al numero di connessioni attive.
+    # Ottimale per WebSocket long-lived.
+    nginx.ingress.kubernetes.io/upstream-hash-by: ""
+    nginx.ingress.kubernetes.io/load-balance: "least_conn"
+
+    # ── Corpo richiesta ───────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+
+    # ── Rate limiting ─────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/limit-connections: "20"
+    nginx.ingress.kubernetes.io/limit-rps:         "30"
+
+spec:
+  rules:
+    - host: game.local     # cambiare con il dominio reale in produzione
+
+      http:
+        paths:
+          # ── WebSocket (/ws/) ──────────────────────────────────────────────
+          - path: /ws/
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+
+          # ── REST API (/api/) ──────────────────────────────────────────────
+          - path: /api/
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+
+          # ── Health check ──────────────────────────────────────────────────
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+
+          # ── Frontend (catch-all) ──────────────────────────────────────────
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000
+
+---
+# ConfigMap per custom headers inoltrati al backend
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-headers
+  namespace: game
+data:
+  X-Forwarded-Proto: "$scheme"
+  X-Real-IP:         "$remote_addr"

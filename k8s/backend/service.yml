@@ -1,0 +1,21 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ClusterIP: il backend è raggiunto dall'Ingress controller (NGINX) internamente.
+# Non esposto direttamente all'esterno.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: game
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: game-platform
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+      protocol: TCP

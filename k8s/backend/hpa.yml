@@ -1,0 +1,64 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# HorizontalPodAutoscaler per il backend.
+#
+# Prerequisito: metrics-server installato nel cluster.
+#   minikube addons enable metrics-server
+#
+# Logica di scaling:
+#   - Scala UP  quando la CPU media supera il 60% per più di 15s
+#   - Scala DOWN quando la CPU scende sotto il 60% per più di 5 minuti
+#     (stabilizationWindowSeconds evita flapping)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: game
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: game-platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+
+  minReplicas: 2    # almeno 2 per alta disponibilità
+  maxReplicas: 8    # limite superiore (adattare alla capacità del cluster)
+
+  metrics:
+    # ── Metrica primaria: utilizzo CPU ────────────────────────────────────────
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60    # % della CPU request del container
+
+    # ── Metrica secondaria: memoria ───────────────────────────────────────────
+    # Utile se i WebSocket consumano molta memoria per connessione.
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+
+  behavior:
+    # ── Scale UP: reattivo ────────────────────────────────────────────────────
+    scaleUp:
+      stabilizationWindowSeconds: 15    # scala subito se sotto carico
+      policies:
+        - type: Pods
+          value: 2                      # aggiungi al massimo 2 pod per volta
+          periodSeconds: 30
+
+    # ── Scale DOWN: conservativo ─────────────────────────────────────────────
+    # Con WebSocket: abbattere un pod disconnette i client.
+    # 5 minuti di stabilità prima di scalare down.
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1                      # rimuovi al massimo 1 pod per volta
+          periodSeconds: 60

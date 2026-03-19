@@ -1,0 +1,110 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Deployment del backend FastAPI.
+# Inizia con 2 repliche; l'HPA (hpa.yml) gestisce lo scaling automatico.
+# Ogni pod ha un INSTANCE_ID univoco (HOSTNAME del pod, iniettato da K8s).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: game
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: game-platform
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1           # crea 1 pod nuovo prima di abbatterne uno vecchio
+      maxUnavailable: 0     # zero downtime: nessun pod abbattuto finché il nuovo
+                            # non è Ready (importante per connessioni WS attive)
+  template:
+    metadata:
+      labels:
+        app: backend
+      annotations:
+        # Prometheus scraping diretto sul pod
+        prometheus.io/scrape: "true"
+        prometheus.io/port:   "8000"
+        prometheus.io/path:   "/metrics"
+    spec:
+      # Termination grace period: lascia 60s ai client WS per riconnettersi
+      # prima che il pod venga terminato forzatamente.
+      terminationGracePeriodSeconds: 60
+
+      containers:
+        - name: backend
+          image: game_backend:latest
+          imagePullPolicy: IfNotPresent   # usare Always in produzione con registry
+
+          ports:
+            - containerPort: 8000
+              name: http
+
+          # ── Variabili d'ambiente dal ConfigMap ────────────────────────────
+          envFrom:
+            - configMapRef:
+                name: game-config
+          env:
+            # HOSTNAME è il nome del pod — usato come INSTANCE_ID nel PubSubManager
+            # K8s lo inietta automaticamente, nessuna configurazione necessaria.
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+
+          # ── Risorse ───────────────────────────────────────────────────────
+          resources:
+            requests:
+              cpu:    "100m"   # base per lo scheduling
+              memory: "128Mi"
+            limits:
+              cpu:    "500m"   # l'HPA scala su CPU; tenere il limite ragionevole
+              memory: "256Mi"
+
+          # ── Liveness probe ─────────────────────────────────────────────────
+          # Se fallisce N volte consecutive, K8s riavvia il container.
+          # Usa /health che verifica anche la connettività a Redis.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          # ── Readiness probe ────────────────────────────────────────────────
+          # Il pod NON riceve traffico finché questa probe non passa.
+          # Cruciale: evita che connessioni WS finiscano su un pod non ancora
+          # connesso a Redis.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # ── Startup probe ──────────────────────────────────────────────────
+          # Dà tempo extra al pod di avviarsi senza che la liveness lo uccida.
+          # 30 tentativi × 5s = 150s massimo per l'avvio.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            failureThreshold: 30
+            periodSeconds: 5
+
+          # ── Lifecycle hook: draining graceful ─────────────────────────────
+          # Aspetta 5s prima di iniziare lo shutdown per permettere
+          # a kube-proxy di rimuovere il pod dagli endpoint.
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]

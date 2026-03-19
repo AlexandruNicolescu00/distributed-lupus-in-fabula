@@ -1,0 +1,98 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose-dev.yml — Servizi di appoggio per sviluppo locale
+#
+# Contiene SOLO i servizi infrastrutturali. Backend e frontend girano
+# direttamente sulla macchina dello sviluppatore (uvicorn / vite dev server).
+#
+# Uso:
+#   docker compose -f docker-compose-dev.yml up -d
+#
+# Backend: http://localhost:8000  (avviato manualmente con uvicorn)
+# Frontend: http://localhost:5173  (avviato manualmente con vite)
+# Redis: localhost:6379
+# Prometheus: http://localhost:9090
+# Grafana: http://localhost:3001  (admin / admin)
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  dev_net:
+    driver: bridge
+
+volumes:
+  redis_data_dev:
+  prometheus_data_dev:
+  grafana_data_dev:
+
+services:
+  # ── REDIS ────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis_dev
+    ports:
+      - "6379:6379" # esposto sull'host per backend locale
+    volumes:
+      - redis_data_dev:/data
+      - ./infrastructure/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - dev_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    sysctls:
+      net.core.somaxconn: 511
+
+  # ── REDIS EXPORTER ───────────────────────────────────────────
+  redis_exporter:
+    image: oliver006/redis_exporter:v1.58.0
+    container_name: redis_exporter_dev
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    networks:
+      - dev_net
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # ── PROMETHEUS ───────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus_dev
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/monitoring/prometheus/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data_dev:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=3d"
+      - "--web.enable-lifecycle"
+    networks:
+      - dev_net
+    restart: unless-stopped
+
+  # ── GRAFANA ──────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana_dev
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data_dev:/var/lib/grafana
+      - ./infrastructure/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infrastructure/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - dev_net
+    depends_on:
+      - prometheus
+    restart: unless-stopped

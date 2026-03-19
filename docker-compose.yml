@@ -1,0 +1,200 @@
+# ─────────────────────────────────────────────
+# NETWORKS
+# ─────────────────────────────────────────────
+networks:
+  frontend_net: # proxy <--> frontend
+    driver: bridge
+  backend_net: # proxy <--> backend
+    driver: bridge
+  data_net: # backend <--> redis
+    driver: bridge
+  monitoring_net: # prometheus / grafana
+    driver: bridge
+
+# ─────────────────────────────────────────────
+# VOLUMES
+# ─────────────────────────────────────────────
+volumes:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+# ─────────────────────────────────────────────
+# SERVICES
+# ─────────────────────────────────────────────
+services:
+  # ── REVERSE PROXY ────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx_proxy
+    ports:
+      - "80:80"
+      - "443:443" # predisposto per TLS futuro
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/nginx/conf.d:/etc/nginx/conf.d:ro
+    networks:
+      - frontend_net
+      - backend_net
+    depends_on:
+      - backend
+      - frontend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── BACKEND (FastAPI) ─────────────────────────
+  # Per più repliche in locale usa:
+  #   docker compose up --scale backend=3
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: game_backend:latest
+    expose:
+      - "8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - APP_ENV=development
+      - LOG_LEVEL=info
+      # Aggiunto dal Membro 1 una volta definito il formato messaggi:
+      # - REDIS_CHANNEL_PREFIX=game
+    #env_file:
+    #  - .env
+    networks:
+      - backend_net
+      - data_net
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # Etichette per Prometheus (scraping automatico)
+    labels:
+      - "prometheus.scrape=true"
+      - "prometheus.port=8000"
+      - "prometheus.path=/metrics"
+    deploy:
+      replicas: 2 # alzare in produzione / swarm
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+
+  # ── FRONTEND ─────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: game_frontend:latest
+    expose:
+      - "3000"
+    environment:
+      - NODE_ENV=production
+      # L'URL del WS viene iniettato a build-time o runtime;
+      # l'effettivo endpoint è ws://<host>/ws  (esposto da NGINX)
+      - VITE_WS_URL=ws://localhost/ws
+    networks:
+      - frontend_net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── REDIS ────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+      - ./infrastructure/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      - data_net
+      - monitoring_net # raggiungibile da redis_exporter
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    sysctls:
+      net.core.somaxconn: 511
+
+  # ── PROMETHEUS ───────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    networks:
+      - monitoring_net
+      - backend_net # per raggiungere /metrics dei backend
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── GRAFANA ──────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    ports:
+      - "3001:3000" # 3001 sul host per non collidere col frontend
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin # cambiare in produzione
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_PROVISIONING_PATH=/etc/grafana/provisioning
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - monitoring_net
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── REDIS EXPORTER (metriche Redis → Prometheus) ──
+  redis_exporter:
+    image: oliver006/redis_exporter:v1.58.0
+    container_name: redis_exporter
+    expose:
+      - "9121"
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    networks:
+      - monitoring_net
+      - data_net
+    depends_on:
+      - redis
+    restart: unless-stopped
