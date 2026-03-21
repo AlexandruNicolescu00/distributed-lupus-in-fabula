@@ -4,6 +4,9 @@ import { useRouter } from 'vue-router'
 import { useGameStore, PHASES, ROLES, WINNERS } from '@/stores/gameStore'
 import { useLobbyStore } from '@/stores/lobbyStore'
 import { useChatStore } from '@/stores/chatStore'
+import ChatBox from '@/components/ChatBox.vue'
+import PhaseTimer from '@/components/PhaseTimer.vue'
+
 
 const router  = useRouter()
 const game    = useGameStore()
@@ -206,19 +209,8 @@ function roleRevealLabel(role) {
         {{ phaseLabel }}
       </div>
 
-      <div class="timer-wrap">
-        <svg class="timer-ring" viewBox="0 0 36 36">
-          <circle cx="18" cy="18" r="15.9" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="2"/>
-          <circle cx="18" cy="18" r="15.9" fill="none"
-            :stroke="phaseColor" stroke-width="2"
-            stroke-dasharray="100 100"
-            :stroke-dashoffset="100 - game.timerProgress"
-            stroke-linecap="round"
-            transform="rotate(-90 18 18)"
-            style="transition: stroke-dashoffset 1s linear"/>
-        </svg>
-        <span class="timer-text">{{ formattedTimer }}</span>
-      </div>
+      <PhaseTimer size="md" :color="phaseColor" />
+
     </header>
 
     <!-- CORPO -->
@@ -353,41 +345,7 @@ function roleRevealLabel(role) {
 
       <!-- CHAT -->
       <section class="chat-col">
-        <div class="col-title">
-          Chat
-          <span class="chat-channel">
-            {{ game.phase === PHASES.NIGHT && game.isWolf ? '🐺 solo lupi' : '🌍 tutti' }}
-          </span>
-        </div>
-
-        <div class="chat-messages">
-          <div
-            v-for="msg in visibleMessages"
-            :key="msg.id"
-            class="chat-msg"
-            :class="{ 'chat-msg--me': msg.senderName === 'Tu' }"
-          >
-            <span class="msg-sender">{{ msg.senderName }}</span>
-            <span class="msg-text">{{ msg.text }}</span>
-          </div>
-          <div v-if="visibleMessages.length === 0" class="chat-empty">
-            Nessun messaggio ancora...
-          </div>
-        </div>
-
-        <div class="chat-input-wrap">
-          <input
-            v-model="chatInput"
-            class="chat-input"
-            :placeholder="canChat ? 'Scrivi un messaggio...' : 'Chat non disponibile'"
-            :disabled="!canChat"
-            @keyup.enter="sendChat"
-            maxlength="200"
-          />
-          <button class="chat-send" :disabled="!canChat || !chatInput.trim()" @click="sendChat">
-            ➤
-          </button>
-        </div>
+        <ChatBox />
       </section>
 
       <!-- SIDEBAR RUOLO -->
