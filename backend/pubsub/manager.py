@@ -12,16 +12,14 @@
 # Confrontando sender_id con INSTANCE_ID si evita il doppio invio ai client locali.
 
 import asyncio
-import json
 import logging
-import os
 import time
-import uuid
 
 import redis.asyncio as aioredis
 from redis.asyncio.client import PubSub
 
 from core.config import get_settings
+from core.instance import INSTANCE_ID
 from core.messages import RedisEvent, WSMessage
 from core.metrics import (
     REDIS_MESSAGES_DEDUPLICATED_TOTAL,
@@ -32,9 +30,6 @@ from core.metrics import (
 from websocket.connection_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
-
-# ID univoco di questa istanza — assegnato all'avvio del processo
-INSTANCE_ID: str = os.environ.get("HOSTNAME", str(uuid.uuid4())[:8])
 
 
 class PubSubManager:

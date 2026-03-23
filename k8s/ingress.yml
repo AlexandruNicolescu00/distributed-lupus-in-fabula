@@ -25,35 +25,35 @@ metadata:
     app.kubernetes.io/part-of: game-platform
   annotations:
     # ── Controller ────────────────────────────────────────────────────────────
-    kubernetes.io/ingress.class: "nginx"
+    # ingressClassName sostituisce la annotation deprecata kubernetes.io/ingress.class
+    # (vedi anche spec.ingressClassName sotto)
 
     # ── WebSocket ─────────────────────────────────────────────────────────────
-    # Abilita il proxy WebSocket per tutti i path (non solo /ws).
-    # L'ingress controller aggiunge Upgrade e Connection automaticamente.
     nginx.ingress.kubernetes.io/proxy-read-timeout:    "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout:    "3600"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "15"
-
-    # Disabilita il buffering per i frame WebSocket
-    nginx.ingress.kubernetes.io/proxy-buffering: "off"
-
-    # Header forwarding per il backend FastAPI
-    nginx.ingress.kubernetes.io/proxy-set-headers: "game/custom-headers"
+    nginx.ingress.kubernetes.io/proxy-buffering:       "off"
+    nginx.ingress.kubernetes.io/proxy-set-headers:     "game/custom-headers"
 
     # ── Load balancing ────────────────────────────────────────────────────────
-    # least_conn: distribuisce in base al numero di connessioni attive.
-    # Ottimale per WebSocket long-lived.
-    nginx.ingress.kubernetes.io/upstream-hash-by: ""
-    nginx.ingress.kubernetes.io/load-balance: "least_conn"
+    # Valori validi: round_robin | ewma | ip_hash
+    # ewma (Exponentially Weighted Moving Average) bilancia in base alla latenza
+    # misurata — ottimale per WebSocket long-lived, simile a least_conn.
+    nginx.ingress.kubernetes.io/load-balance: "ewma"
 
     # ── Corpo richiesta ───────────────────────────────────────────────────────
     nginx.ingress.kubernetes.io/proxy-body-size: "1m"
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
-    nginx.ingress.kubernetes.io/limit-connections: "20"
-    nginx.ingress.kubernetes.io/limit-rps:         "30"
+    # Valori generosi per supportare test di carico e picchi di connessioni.
+    # In produzione abbassare in base al traffico atteso.
+    # limit-connections: max connessioni simultanee per IP
+    # limit-rps: max nuove connessioni al secondo per IP
+    nginx.ingress.kubernetes.io/limit-connections: "200"
+    nginx.ingress.kubernetes.io/limit-rps:         "100"
 
 spec:
+  ingressClassName: nginx
   rules:
     - host: game.local     # cambiare con il dominio reale in produzione
 
@@ -85,6 +85,24 @@ spec:
                 name: backend
                 port:
                   number: 8000
+
+          # ── Grafana ──────────────────────────────────────────────────────
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+
+          # ── Prometheus ───────────────────────────────────────────────────
+          - path: /prometheus
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus
+                port:
+                  number: 9090
 
           # ── Frontend (catch-all) ──────────────────────────────────────────
           - path: /

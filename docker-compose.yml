@@ -172,7 +172,7 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./infrastructure/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./infrastructure/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks:
       - monitoring_net
     depends_on:

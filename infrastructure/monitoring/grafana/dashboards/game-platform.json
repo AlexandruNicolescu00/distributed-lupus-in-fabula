@@ -50,7 +50,7 @@
     "annotations": {
         "list": []
     },
-    "description": "Game Platform — panoramica real-time di player, WebSocket, Redis Pub/Sub, latenza e risorse",
+    "description": "Game Platform - panoramica real-time di player, WebSocket, Redis Pub/Sub, latenza e risorse",
     "editable": true,
     "fiscalYearStartMonth": 0,
     "graphTooltip": 1,
@@ -609,7 +609,7 @@
         },
         {
             "id": 20,
-            "title": "Latenza HTTP — p50 / p95 / p99",
+            "title": "Latenza HTTP - p50 / p95 / p99",
             "type": "timeseries",
             "gridPos": {
                 "h": 8,
@@ -708,7 +708,7 @@
         },
         {
             "id": 21,
-            "title": "Latenza Redis PUBLISH — p50 / p95 / p99",
+            "title": "Latenza Redis PUBLISH - p50 / p95 / p99",
             "type": "timeseries",
             "gridPos": {
                 "h": 8,
@@ -901,12 +901,12 @@
                 "y": 37
             },
             "id": 103,
-            "title": "Message Flow — Redis Pub/Sub",
+            "title": "Message Flow - Redis Pub/Sub",
             "type": "row"
         },
         {
             "id": 30,
-            "title": "Messaggi/sec — pubblicati vs ricevuti da Redis",
+            "title": "Messaggi/sec - pubblicati vs ricevuti da Redis",
             "type": "timeseries",
             "gridPos": {
                 "h": 8,
@@ -957,7 +957,7 @@
         },
         {
             "id": 31,
-            "title": "Messaggi WebSocket — ricevuti vs inviati",
+            "title": "Messaggi WebSocket - ricevuti vs inviati",
             "type": "timeseries",
             "gridPos": {
                 "h": 8,
@@ -1252,7 +1252,7 @@
         },
         {
             "id": 43,
-            "title": "Memoria Redis — usata vs limite",
+            "title": "Memoria Redis - usata vs limite",
             "type": "timeseries",
             "gridPos": {
                 "h": 7,
@@ -1311,7 +1311,7 @@
     },
     "timepicker": {},
     "timezone": "browser",
-    "title": "Game Platform — Overview",
+    "title": "Game Platform - Overview",
     "uid": "game-platform-overview",
     "version": 1
 }

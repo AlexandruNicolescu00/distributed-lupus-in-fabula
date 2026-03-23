@@ -1,4 +1,3 @@
-# ⚠️  INTERFACCIA CON MEMBRO 1
 # Questo file definisce il formato dei messaggi scambiati su Redis Pub/Sub
 # e tra backend e client WebSocket.
 #
@@ -75,7 +74,8 @@ class RedisEvent(BaseModel):
 class WSMessage(BaseModel):
     """
     Formato del messaggio inviato dal backend al client WebSocket.
-    Sottoinsieme di RedisEvent — non espone sender_id al client.
+    Include instance_id per permettere ai client (e ai test) di sapere
+    quale istanza backend ha processato l'evento.
     """
 
     event_id: str
@@ -83,6 +83,7 @@ class WSMessage(BaseModel):
     room_id: str
     timestamp: float
     payload: dict[str, Any]
+    instance_id: str = ""  # INSTANCE_ID del backend mittente
 
     @classmethod
     def from_redis_event(cls, event: RedisEvent) -> "WSMessage":
@@ -92,6 +93,7 @@ class WSMessage(BaseModel):
             room_id=event.room_id,
             timestamp=event.timestamp,
             payload=event.payload,
+            instance_id=event.sender_id,
         )
 
 

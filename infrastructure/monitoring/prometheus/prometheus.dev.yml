@@ -3,8 +3,16 @@
 # per raggiungere i processi fuori dal container.
 
 global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+  scrape_interval: 10s      # più frequente in dev per vedere le metriche subito
+  evaluation_interval: 10s
+
+# ── Regole di alerting ────────────────────────────────────────────────────────
+# Le stesse regole della produzione, montate dallo stesso path.
+# Vedi docker-compose-dev.yml: volume mount di ./infrastructure/monitoring/prometheus/rules
+rule_files:
+  - "/etc/prometheus/rules/backend.yml"
+  - "/etc/prometheus/rules/redis.yml"
+  - "/etc/prometheus/rules/infra.yml"
 
 scrape_configs:
 
@@ -16,6 +24,7 @@ scrape_configs:
           - "host.docker.internal:8000"   # macOS / Windows Docker Desktop
           # - "172.17.0.1:8000"           # Linux: IP del bridge docker0
     metrics_path: /metrics
+    scrape_interval: 10s
 
   # Redis Exporter (gira nel compose, raggiungibile via nome servizio)
   - job_name: "redis"

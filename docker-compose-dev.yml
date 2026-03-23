@@ -67,6 +67,7 @@ services:
       - "9090:9090"
     volumes:
       - ./infrastructure/monitoring/prometheus/prometheus.dev.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infrastructure/monitoring/prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data_dev:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"

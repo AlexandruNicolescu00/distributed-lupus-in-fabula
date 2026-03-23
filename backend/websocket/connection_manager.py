@@ -9,6 +9,7 @@ from collections import defaultdict
 
 from fastapi import WebSocket
 
+from core.instance import INSTANCE_ID
 from core.metrics import (
     ACTIVE_PLAYERS,
     ACTIVE_ROOMS,
@@ -18,7 +19,6 @@ from core.metrics import (
     WS_DISCONNECTIONS_TOTAL,
     WS_MESSAGES_SENT_TOTAL,
 )
-from pubsub.manager import INSTANCE_ID
 
 logger = logging.getLogger(__name__)
 

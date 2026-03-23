@@ -46,6 +46,14 @@ else
   echo -e "  ${YLW}→${NC} secret.yml non trovato — saltato (ok se Redis non ha password)"
 fi
 
+# ── Regole Prometheus (generate dai file sorgente) ───────────────────────────
+step "ConfigMap regole Prometheus"
+kubectl create configmap prometheus-rules   --from-file="$K8S_DIR/../infrastructure/monitoring/prometheus/rules/"   -n "$NAMESPACE"   --dry-run=client -o yaml | kubectl apply -f -
+ok "prometheus-rules aggiornato da infrastructure/monitoring/prometheus/rules/"
+
+# ── Regole di alerting applicabili subito a Prometheus in esecuzione
+# kubectl -n "$NAMESPACE" exec deploy/prometheus -- #   wget -q --post-data='' http://localhost:9090/prometheus/-/reload -O -
+
 # ── Redis ─────────────────────────────────────────────────────────────────────
 step "Redis"
 kubectl apply -f "$K8S_DIR/redis/"
@@ -72,6 +80,11 @@ ok "Frontend deployment e service applicati"
 echo "  Attesa Frontend ready..."
 kubectl rollout status deployment/frontend -n "$NAMESPACE" --timeout=90s
 ok "Frontend pronto"
+
+# ── Redis Exporter ───────────────────────────────────────────────────────────
+step "Redis Exporter"
+kubectl apply -f "$K8S_DIR/monitoring/redis-exporter.yml"
+ok "Redis exporter applicato"
 
 # ── Ingress ───────────────────────────────────────────────────────────────────
 step "Ingress"
