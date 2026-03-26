@@ -1,0 +1,18 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Provisioning automatico del datasource Prometheus.
+# Grafana lo carica all'avvio — nessuna configurazione manuale richiesta.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    uid: prometheus-uid       # UID fisso — usato nei JSON delle dashboard
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: "10s"     # allineato allo scrape_interval del backend
+      queryTimeout: "60s"
+      httpMethod: POST

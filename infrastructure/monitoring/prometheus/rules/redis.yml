@@ -1,0 +1,36 @@
+groups:
+  - name: redis
+    rules:
+
+      # ── Redis non raggiungibile ────────────────────────────────────────────
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis non raggiungibile"
+          description: "redis_exporter non riesce a connettersi a Redis."
+
+      # ── Memoria Redis > 80% del limite ────────────────────────────────────
+      - alert: RedisHighMemoryUsage
+        expr: |
+          redis_memory_used_bytes
+          /
+          redis_memory_max_bytes > 0.8
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis usa oltre l'80% della memoria configurata"
+          description: "Utilizzo attuale: {{ $value | humanizePercentage }}."
+
+      # ── Ultimo bgsave fallito ─────────────────────────────────────────────
+      - alert: RedisRDBSaveFailed
+        expr: redis_rdb_last_bgsave_status == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ultimo snapshot RDB di Redis fallito"
+          description: "Verificare i log di Redis per dettagli."

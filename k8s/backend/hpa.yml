@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# HorizontalPodAutoscaler per il backend.
+#
+# Prerequisito: metrics-server installato nel cluster.
+#   minikube addons enable metrics-server
+#
+# Logica di scaling:
+#   - Scala UP  quando la CPU media supera il 60% per più di 15s
+#   - Scala DOWN quando la CPU scende sotto il 60% per più di 5 minuti
+#     (stabilizationWindowSeconds evita flapping)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: game
+  labels:
+    app: backend
+    app.kubernetes.io/part-of: game-platform
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+
+  minReplicas: 2
+  maxReplicas: 8
+
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50    # scala prima: 50% invece di 60%
+
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+  behavior:
+    # Scale UP aggressivo: reagisce ai picchi di connessioni WebSocket
+    scaleUp:
+      stabilizationWindowSeconds: 0     # nessuna attesa: scala immediatamente
+      policies:
+        - type: Pods
+          value: 2                      # aggiungi 2 pod alla volta
+          periodSeconds: 15             # ogni 15s invece di 30s
+
+    # Scale DOWN conservativo: evita di disconnettere client WS
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
