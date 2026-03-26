@@ -21,14 +21,18 @@ export const useChatStore = defineStore('chat', () => {
 
   /** Messaggi visibili al giocatore corrente in base a fase e ruolo */
   const visibleMessages = computed(() => {
-    const gameStore = useGameStore()
-    return messages.value.filter((msg) => {
-      if (msg.channel === CHANNELS.DEAD)   return !gameStore.isAlive
-      if (msg.channel === CHANNELS.WOLVES) return gameStore.isWolf
-      if (msg.channel === CHANNELS.GLOBAL) return gameStore.phase === PHASES.DAY || gameStore.phase === PHASES.VOTE
-      return false
-    })
+  const gameStore = useGameStore()
+  // Se il giocatore è morto → vede solo il canale dead
+  if (!gameStore.isAlive) {
+    return messages.value.filter((msg) => msg.channel === CHANNELS.DEAD)
+  }
+  return messages.value.filter((msg) => {
+    if (msg.channel === CHANNELS.DEAD)   return false
+    if (msg.channel === CHANNELS.WOLVES) return gameStore.isWolf
+    if (msg.channel === CHANNELS.GLOBAL) return gameStore.phase === PHASES.DAY || gameStore.phase === PHASES.VOTING
+    return false
   })
+})
 
   /** Canale attivo per il giocatore in base alla fase corrente */
   const activeChannel = computed(() => {
@@ -39,13 +43,14 @@ export const useChatStore = defineStore('chat', () => {
   })
 
   /** Il giocatore può scrivere in questo momento? */
-  const canChat = computed(() => {
-    const gameStore = useGameStore()
-    if (!gameStore.isAlive) return false
-    if (gameStore.phase === PHASES.NIGHT && !gameStore.isWolf) return false
-    if (gameStore.phase === PHASES.LOBBY || gameStore.phase === PHASES.END) return false
-    return true
-  })
+ const canChat = computed(() => {
+  const gameStore = useGameStore()
+  // I morti possono chattare nel canale dead
+  if (!gameStore.isAlive) return true
+  if (gameStore.phase === PHASES.NIGHT && !gameStore.isWolf) return false
+  if (gameStore.phase === PHASES.LOBBY || gameStore.phase === PHASES.ENDED) return false
+  return true
+})
 
   // ---- ACTIONS ----
 

@@ -8,54 +8,104 @@ import ChatBox    from '@/components/ChatBox.vue'
 import PhaseTimer from '@/components/PhaseTimer.vue'
 import InfoBox    from '@/components/InfoBox.vue'
 
+// ---- SETUP ROUTING E STORES ----
+// Router: serve per navigare tra le pagine (es. tornare alla lobby o andare ai risultati)
 const router = useRouter()
-const game   = useGameStore()
-const lobby  = useLobbyStore()
-const chat   = useChatStore()
 
-// ---- UI STATE ----
-const showRoleBanner   = ref(false)
-const myVote           = ref(null)
-const nightActionDone  = ref(false)
-const showNightOverlay = ref(false)
+// Stores: i "magazzini" centralizzati di dati condivisi
+const game   = useGameStore()  // Stato del gioco (fase, giocatori, ruoli, round)
+const lobby  = useLobbyStore() // Informazioni sulla lobby (codice stanza, giocatori connessi)
+const chat   = useChatStore()  // Messaggi della chat (visibili in base a fase e ruolo)
 
-// ---- MOCK ----
+// ---- STATO LOCALE DEL COMPONENTE ----
+// Questi dati servono SOLO a questa schermata di gioco, non vanno condivisi globalmente
+
+const showRoleBanner   = ref(false) // Mostra il banner "Sei un Lupo!" all'inizio
+const myVote           = ref(null)  // ID del giocatore che ho votato (per disabilitare il pulsante dopo il voto)
+const nightActionDone  = ref(false) // True se ho già fatto l'azione notturna (lupo o veggente)
+const showNightOverlay = ref(false) // Mostra l'overlay scuro durante la notte
+
+// ---- onMounted: COSA SUCCEDE QUANDO IL COMPONENTE VIENE CARICATO ----
+// Questa funzione si attiva UNA SOLA VOLTA quando la pagina Game.vue viene mostrata
 onMounted(() => {
+  // Controllo se il giocatore è già loggato e ha un ID
   if (!game.currentPlayerId) {
-    // MOCK TEMPORANEO — rimuovere quando il backend è pronto
-    game.currentPlayerId = 'p1'
-    game.myRole          = ROLES.VILLAGER
-    game.phase           = PHASES.DAY
-    game.round           = 1
+    // ========================================
+    // MOCK TEMPORANEO — SOLO PER SVILUPPO
+    // ========================================
+    // Quando il backend non è ancora pronto, simulo i dati di gioco
+    // così posso testare l'interfaccia senza dover connettere il server
+    
+    game.currentPlayerId = 'p1'           // Simulo che io sono il giocatore con ID 'p1'
+    game.myRole          = ROLES.VILLAGER // Simulo che il mio ruolo è Contadino
+    game.phase           = PHASES.DAY     // Simulo che è giorno
+    game.round           = 1              // Simulo che siamo al round 1
+    
+    // Lista di giocatori fake per testare l'UI
     game.players = [
-      { player_id: 'p1', username: 'Tu',    role: null, alive: true  },
+      { player_id: 'p1', username: 'Tu',    role: null, alive: true  },  // Io
       { player_id: 'p2', username: 'Marco', role: null, alive: true  },
       { player_id: 'p3', username: 'Sofia', role: null, alive: true  },
       { player_id: 'p4', username: 'Luca',  role: null, alive: true  },
-      { player_id: 'p5', username: 'Anna',  role: null, alive: false },
+      { player_id: 'p5', username: 'Anna',  role: null, alive: false }, // Già eliminata
     ]
+    
+    // Messaggi fake nella chat per testare il componente ChatBox
     chat.messages = [
       { id: 1, senderId: 'p2', senderName: 'Marco', text: 'Buongiorno!',     channel: 'global', timestamp: new Date().toISOString() },
       { id: 2, senderId: 'p3', senderName: 'Sofia', text: 'Chi sospettate?', channel: 'global', timestamp: new Date().toISOString() },
     ]
+    
+    // Timer simulato: finisce tra 60 secondi
     game.timerEnd = Date.now() / 1000 + 60
+    
   } else {
-    game.listenToGameEvents()
-    chat.listenToMessages()
+    // ========================================
+    // CONNESSIONE REALE AL BACKEND
+    // ========================================
+    // Se il giocatore è già loggato, attiva i listener per ricevere
+    // gli eventi dal backend via WebSocket (Socket.IO)
+    
+    game.listenToGameEvents() // Ascolta: cambio fase, eliminazioni, timer, ecc.
+    chat.listenToMessages()   // Ascolta: nuovi messaggi in arrivo
   }
+  
+  // ---- BANNER DEL RUOLO ----
+  // Mostra il banner "🐺 Sei un Lupo!" per 3.5 secondi all'inizio
   showRoleBanner.value = true
   setTimeout(() => (showRoleBanner.value = false), 3500)
 })
 
-onUnmounted(() => { chat.reset() })
-
-watch(() => game.phase, (newPhase) => {
-  showNightOverlay.value = newPhase === PHASES.NIGHT
-  myVote.value           = null
-  nightActionDone.value  = false
+// ---- onUnmounted: PULIZIA QUANDO SI ESCE DALLA PAGINA ----
+// Si attiva quando l'utente esce da Game.vue (es. torna alla lobby o va ai risultati)
+onUnmounted(() => { 
+  chat.reset() // Cancella i messaggi per evitare che rimangano nella prossima partita
 })
 
-// ---- COMPUTED ----
+// ---- WATCHERS: REAGISCONO AI CAMBIAMENTI ----
+
+// Watcher 1: Quando cambia la fase di gioco
+watch(() => game.phase, (newPhase) => {
+  // Se entra la notte, mostra l'overlay scuro
+  showNightOverlay.value = newPhase === PHASES.NIGHT
+  
+  // Reset delle azioni del giocatore per la nuova fase
+  myVote.value           = null  // Cancella il voto precedente
+  nightActionDone.value  = false // Permetti di fare l'azione notturna
+})
+
+// Watcher 2: Quando la partita finisce
+watch(() => game.phase, (newPhase) => {
+  if (newPhase === PHASES.ENDED) {
+    // Attendi 1.5 secondi (effetto drammatico) poi vai alla schermata risultati
+    setTimeout(() => router.push('/results'), 1500)
+  }
+})
+
+// ---- COMPUTED: VALORI CALCOLATI AUTOMATICAMENTE ----
+// Si aggiornano automaticamente quando cambiano i dati da cui dipendono
+
+// Etichetta della fase corrente (es. "☀️ Giorno")
 const phaseLabel = computed(() => {
   const map = {
     [PHASES.DAY]:    '☀️  Giorno',
@@ -67,16 +117,18 @@ const phaseLabel = computed(() => {
   return map[game.phase] ?? game.phase
 })
 
+// Colore della fase (per colorare l'header in base al momento del gioco)
 const phaseColor = computed(() => {
   const map = {
-    [PHASES.DAY]:    '#e8c87a',
-    [PHASES.VOTING]: '#f87171',
-    [PHASES.NIGHT]:  '#818cf8',
-    [PHASES.ENDED]:  '#4ade80',
+    [PHASES.DAY]:    '#e8c87a', // Giallo caldo
+    [PHASES.VOTING]: '#f87171', // Rosso (votazione)
+    [PHASES.NIGHT]:  '#818cf8', // Blu/viola (notte)
+    [PHASES.ENDED]:  '#4ade80', // Verde (fine partita)
   }
   return map[game.phase] ?? '#e8e0d5'
 })
 
+// Informazioni sul ruolo del giocatore (icona, nome, descrizione)
 const roleLabel = computed(() => {
   const map = {
     [ROLES.VILLAGER]: { icon: '🧑‍🌾', name: 'Contadino', desc: 'Trova i lupi e sopravvivi!' },
@@ -86,38 +138,68 @@ const roleLabel = computed(() => {
   return map[game.myRole] ?? { icon: '?', name: 'Sconosciuto', desc: '' }
 })
 
-const canVote = computed(() => game.phase === PHASES.VOTING && game.isAlive && !myVote.value)
-const canAct  = computed(() => game.phase === PHASES.NIGHT  && game.isAlive && (game.isWolf || game.isSeer) && !nightActionDone.value)
+// Posso votare? (solo se è fase votazione, sono vivo e non ho già votato)
+const canVote = computed(() => 
+  game.phase === PHASES.VOTING && game.isAlive && !myVote.value
+)
 
-// ← InfoBox rows per la sidebar
+// Posso fare azione notturna? (solo se è notte, sono vivo, sono lupo/veggente e non l'ho già fatta)
+const canAct  = computed(() => 
+  game.phase === PHASES.NIGHT  && 
+  game.isAlive && 
+  (game.isWolf || game.isSeer) && 
+  !nightActionDone.value
+)
+
+// Dati per la sidebar InfoBox (round, giocatori vivi, eliminati)
 const sidebarRows = computed(() => [
   { label: 'Round',     value: game.round },
   { label: 'Vivi',      value: game.alivePlayers.length },
   { label: 'Eliminati', value: game.deadPlayers.length },
 ])
 
-// ---- AZIONI ----
+// ---- FUNZIONI DI AZIONE ----
+
+// Vota un giocatore durante la fase di votazione
 function castVote(targetId) {
+  // Controlli: posso votare? Non sto votando me stesso?
   if (!canVote.value || targetId === game.currentPlayerId) return
-  myVote.value = targetId
-  game.vote(lobby.lobbyCode, targetId)
+  
+  myVote.value = targetId // Salva il voto localmente (per disabilitare il pulsante)
+  game.vote(lobby.lobbyCode, targetId) // Invia il voto al backend
 }
 
+// Azione notturna (lupo uccide, veggente indaga)
 function castNightAction(targetId) {
-  if (!canAct.value) return
-  nightActionDone.value = true
+  if (!canAct.value) return // Controllo se posso agire
+  
+  nightActionDone.value = true // Segna l'azione come completata
+  
+  // Se sono lupo: voto per uccidere
+  // Se sono veggente: chiedo il ruolo del target
   game.isWolf ? game.wolfVote(targetId) : game.seerAction(targetId)
 }
 
+// ---- FUNZIONI DI UTILITÀ ----
+
+// MOCK: funzione per testare il cambio fase manualmente (da rimuovere in produzione)
 function mockPhase(p) {
   game.phase    = p
   game.timerEnd = Date.now() / 1000 + 60
 }
 
-function initials(name) { return (name ?? '?').slice(0, 2).toUpperCase() }
-const avatarColors = ['#7c3aed','#16a34a','#dc2626','#2563eb','#d97706','#9333ea']
-function avatarColor(id) { return avatarColors[(id ?? '').charCodeAt((id ?? 'x').length - 1) % avatarColors.length] }
+// Estrae le iniziali del nome (es. "Marco" → "MA")
+function initials(name) { 
+  return (name ?? '?').slice(0, 2).toUpperCase() 
+}
 
+// Colori avatar casuali basati sull'ID giocatore
+const avatarColors = ['#7c3aed','#16a34a','#dc2626','#2563eb','#d97706','#9333ea']
+function avatarColor(id) { 
+  return avatarColors[(id ?? '').charCodeAt((id ?? 'x').length - 1) % avatarColors.length] 
+}
+
+// Emoji del ruolo per la schermata finale
 function roleRevealLabel(role) {
   return { VILLAGER: '🧑‍🌾', WOLF: '🐺', SEER: '🔮' }[role] ?? '?'
 }

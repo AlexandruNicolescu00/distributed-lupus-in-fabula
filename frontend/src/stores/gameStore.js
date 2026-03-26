@@ -51,13 +51,11 @@ export const useGameStore = defineStore('game', () => {
   const noElimination   = ref(false)
   const noEliminationReason = ref('')
   const voteMap         = ref({})       // { voterId: targetId }
-  const voteCounts      = ref({})       // { targetId: count } — dal backend direttamente
   const gameEndPlayers  = ref([])       // lista finale con ruoli rivelati
 
   const { emit, on } = useSocket()
 
   // ---- GETTERS ----
-  // Nota: il backend usa player_id e username (snake_case)
   const alivePlayers  = computed(() => players.value.filter((p) => p.alive))
   const deadPlayers   = computed(() => players.value.filter((p) => !p.alive))
   const me            = computed(() => players.value.find((p) => p.player_id === currentPlayerId.value))
@@ -85,6 +83,28 @@ export const useGameStore = defineStore('game', () => {
     const total = phaseDurations[phase.value]
     if (!total || !secondsLeft.value) return 0
     return (secondsLeft.value / total) * 100
+  })
+
+  /**
+   * Conta i voti per ciascun target dal voteMap locale.
+   * Restituisce sempre un oggetto { targetId: count }.
+   */
+  const voteCount = computed(() => {
+    const counts = {}
+    
+    // Se voteMap è vuoto o undefined, restituisce oggetto vuoto
+    if (!voteMap.value || Object.keys(voteMap.value).length === 0) {
+      return counts
+    }
+    
+    // Conta i voti per ogni target
+    Object.values(voteMap.value).forEach(target => {
+      if (target) {
+        counts[target] = (counts[target] || 0) + 1
+      }
+    })
+    
+    return counts
   })
 
   // ---- ACTIONS ----
@@ -148,7 +168,6 @@ export const useGameStore = defineStore('game', () => {
       noElimination.value     = false
       seerResult.value        = null
       voteMap.value           = {}
-      voteCounts.value        = {}
     })
 
     // --- role_assigned → RoleAssignedPayload ---
@@ -160,9 +179,8 @@ export const useGameStore = defineStore('game', () => {
 
     // --- vote_update → VoteUpdatePayload ---
     // { event, voter_id, target_id, vote_counts, skip_count }
-    on('vote_update', ({ voter_id, target_id, vote_counts, skip_count }) => {
-      voteMap.value    = { ...voteMap.value, [voter_id]: target_id }
-      voteCounts.value = vote_counts ?? {}
+    on('vote_update', ({ voter_id, target_id }) => {
+      voteMap.value = { ...voteMap.value, [voter_id]: target_id }
     })
 
     // --- player_eliminated → PlayerEliminatedPayload ---
@@ -206,10 +224,11 @@ export const useGameStore = defineStore('game', () => {
     // { event, winner, reason, round, players }
     // winner: "VILLAGERS" | "WOLVES"
     on('game_ended', ({ winner: w, reason, round: finalRound, players: finalPlayers }) => {
-      winner.value          = w               // "VILLAGERS" o "WOLVES"
+      winner.value          = w
       phase.value           = PHASES.ENDED
       round.value           = finalRound
       gameEndPlayers.value  = finalPlayers ?? []
+
       // Aggiorna la lista locale con i ruoli rivelati
       if (finalPlayers?.length) {
         players.value = finalPlayers.map((fp) => ({
@@ -252,7 +271,6 @@ export const useGameStore = defineStore('game', () => {
     noElimination.value       = false
     noEliminationReason.value = ''
     voteMap.value             = {}
-    voteCounts.value          = {}
     gameEndPlayers.value      = []
     error.value               = null
   }
@@ -266,7 +284,7 @@ export const useGameStore = defineStore('game', () => {
     myRole.value          = data.myRole         ?? null
     winner.value          = data.winner         ?? null
     timerEnd.value        = data.timer_end      ?? null   // snake_case come dal backend
-    isPaused.value        = data.paused         ?? false  // "paused" come da GameState
+    isPaused.value        = data.paused         ?? false  
     voteMap.value         = data.voteMap        ?? {}
   }
 
@@ -274,11 +292,11 @@ export const useGameStore = defineStore('game', () => {
     // state
     phase, round, players, currentPlayerId, myRole, wolfCompanions,
     winner, timerEnd, isLoading, error, isPaused, pauseReason,
-    seerResult, noElimination, noEliminationReason, voteMap, voteCounts,
+    seerResult, noElimination, noEliminationReason, voteMap,
     gameEndPlayers,
     // getters
     alivePlayers, deadPlayers, me, isAlive, isWolf, isSeer, isVillager,
-    secondsLeft, timerProgress,
+    secondsLeft, timerProgress, voteCount,
     // actions
     loadState, vote, wolfVote, seerAction, listenToGameEvents, reset,
     // costanti esportate
