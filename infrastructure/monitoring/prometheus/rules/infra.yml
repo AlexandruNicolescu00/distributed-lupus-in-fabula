@@ -1,0 +1,24 @@
+groups:
+  - name: infra
+    rules:
+
+      # ── CPU pod > 85% per 5 minuti ────────────────────────────────────────
+      - alert: HighCPUUsage
+        expr: |
+          rate(process_cpu_seconds_total{job="backend"}[2m]) * 100 > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CPU backend elevata su {{ $labels.instance }}"
+          description: "CPU al {{ $value | humanize }}% da 5 minuti."
+
+      # ── Pod backend < 2 repliche attive ──────────────────────────────────
+      - alert: LowBackendReplicas
+        expr: sum(up{job="backend"}) < 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Meno di 2 istanze backend attive"
+          description: "Solo {{ $value }} istanze attive. Verificare il deployment."

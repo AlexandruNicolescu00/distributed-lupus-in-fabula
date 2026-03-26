@@ -1,0 +1,52 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Regole di alerting per il backend FastAPI.
+# ─────────────────────────────────────────────────────────────────────────────
+groups:
+  - name: backend
+    rules:
+
+      # ── Latenza HTTP p99 > 500ms ─────────────────────────────────────────
+      - alert: HighRequestLatency
+        expr: |
+          histogram_quantile(0.99,
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latenza p99 alta ({{ $value | humanizeDuration }})"
+          description: "Il 99° percentile delle richieste HTTP supera 500ms da 2 minuti."
+
+      # ── Tasso di errori 5xx > 5% ──────────────────────────────────────────
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m])
+          /
+          rate(http_requests_total[5m]) > 0.05
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Tasso errori 5xx > 5%"
+          description: "Più del 5% delle richieste restituisce 5xx da 1 minuto."
+
+      # ── Nessun backend attivo ─────────────────────────────────────────────
+      - alert: BackendDown
+        expr: up{job="backend"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Istanza backend non raggiungibile"
+          description: "Prometheus non riesce a fare scraping di {{ $labels.instance }}."
+
+      # ── Connessioni WebSocket attive oltre soglia ──────────────────────────
+      - alert: HighWebSocketConnections
+        expr: sum(ws_active_connections) > 800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Connessioni WebSocket elevate ({{ $value }})"
+          description: "Le connessioni WS attive superano 800. Valutare lo scaling."

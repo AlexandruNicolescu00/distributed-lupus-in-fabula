@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: game-platform
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30   # ricarica automatica se il file cambia
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: true

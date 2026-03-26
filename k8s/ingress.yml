@@ -1,0 +1,125 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress NGINX per routing del traffico esterno verso i servizi interni.
+#
+# Prerequisiti:
+#   minikube addons enable ingress
+#   # oppure su cluster reale:
+#   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.10.0/deploy/static/provider/cloud/deploy.yaml
+#
+# In locale con minikube, ottenere l'IP con:
+#   minikube ip          → es. 192.168.49.2
+# Aggiungere al /etc/hosts:
+#   192.168.49.2   game.local
+#
+# Routing:
+#   game.local/ws/*  → backend:8000   (WebSocket)
+#   game.local/api/* → backend:8000   (REST)
+#   game.local/      → frontend:3000  (Vue SPA)
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: game-ingress
+  namespace: game
+  labels:
+    app.kubernetes.io/part-of: game-platform
+  annotations:
+    # ── Controller ────────────────────────────────────────────────────────────
+    # ingressClassName sostituisce la annotation deprecata kubernetes.io/ingress.class
+    # (vedi anche spec.ingressClassName sotto)
+
+    # ── WebSocket ─────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/proxy-read-timeout:    "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout:    "3600"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "15"
+    nginx.ingress.kubernetes.io/proxy-buffering:       "off"
+    nginx.ingress.kubernetes.io/proxy-set-headers:     "game/custom-headers"
+
+    # ── Load balancing ────────────────────────────────────────────────────────
+    # Valori validi: round_robin | ewma | ip_hash
+    # ewma (Exponentially Weighted Moving Average) bilancia in base alla latenza
+    # misurata — ottimale per WebSocket long-lived, simile a least_conn.
+    nginx.ingress.kubernetes.io/load-balance: "ewma"
+
+    # ── Corpo richiesta ───────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+
+    # ── Rate limiting ─────────────────────────────────────────────────────────
+    # Valori generosi per supportare test di carico e picchi di connessioni.
+    # In produzione abbassare in base al traffico atteso.
+    # limit-connections: max connessioni simultanee per IP
+    # limit-rps: max nuove connessioni al secondo per IP
+    nginx.ingress.kubernetes.io/limit-connections: "200"
+    nginx.ingress.kubernetes.io/limit-rps:         "100"
+
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: game.local     # cambiare con il dominio reale in produzione
+
+      http:
+        paths:
+          # ── WebSocket (/ws/) ──────────────────────────────────────────────
+          - path: /socket.io/
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+
+          # ── REST API (/api/) ──────────────────────────────────────────────
+          - path: /api/
+            pathType: Prefix
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+
+          # ── Health check ──────────────────────────────────────────────────
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: backend
+                port:
+                  number: 8000
+
+          # ── Grafana ──────────────────────────────────────────────────────
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
+
+          # ── Prometheus ───────────────────────────────────────────────────
+          - path: /prometheus
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus
+                port:
+                  number: 9090
+
+          # ── Frontend (catch-all) ──────────────────────────────────────────
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000
+
+---
+# ConfigMap per custom headers inoltrati al backend
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-headers
+  namespace: game
+data:
+  X-Forwarded-Proto: "$scheme"
+  X-Real-IP:         "$remote_addr"
