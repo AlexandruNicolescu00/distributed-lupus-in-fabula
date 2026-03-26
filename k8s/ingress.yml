@@ -60,7 +60,7 @@ spec:
       http:
         paths:
           # ── WebSocket (/ws/) ──────────────────────────────────────────────
-          - path: /ws/
+          - path: /socket.io/
             pathType: Prefix
             backend:
               service:

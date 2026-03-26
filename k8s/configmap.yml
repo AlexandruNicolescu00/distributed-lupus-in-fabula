@@ -26,5 +26,6 @@ data:
   WS_MAX_SIZE: "1048576"
 
   # ── Frontend ───────────────────────────────────────────────────────────────
-  # Aggiornare con il dominio reale in produzione
-  VITE_WS_URL: "ws://localhost/ws"
+  # Socket.IO si connette allo stesso host del frontend: non serve URL esplicito.
+  # Impostare solo se frontend e backend sono su domini diversi.
+  VITE_SOCKET_URL: "http://game.local"

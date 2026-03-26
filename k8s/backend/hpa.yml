@@ -23,42 +23,37 @@ spec:
     kind: Deployment
     name: backend
 
-  minReplicas: 2    # almeno 2 per alta disponibilità
-  maxReplicas: 8    # limite superiore (adattare alla capacità del cluster)
+  minReplicas: 2
+  maxReplicas: 8
 
   metrics:
-    # ── Metrica primaria: utilizzo CPU ────────────────────────────────────────
     - type: Resource
       resource:
         name: cpu
         target:
           type: Utilization
-          averageUtilization: 60    # % della CPU request del container
+          averageUtilization: 50    # scala prima: 50% invece di 60%
 
-    # ── Metrica secondaria: memoria ───────────────────────────────────────────
-    # Utile se i WebSocket consumano molta memoria per connessione.
     - type: Resource
       resource:
         name: memory
         target:
           type: Utilization
-          averageUtilization: 75
+          averageUtilization: 70
 
   behavior:
-    # ── Scale UP: reattivo ────────────────────────────────────────────────────
+    # Scale UP aggressivo: reagisce ai picchi di connessioni WebSocket
     scaleUp:
-      stabilizationWindowSeconds: 15    # scala subito se sotto carico
+      stabilizationWindowSeconds: 0     # nessuna attesa: scala immediatamente
       policies:
         - type: Pods
-          value: 2                      # aggiungi al massimo 2 pod per volta
-          periodSeconds: 30
+          value: 2                      # aggiungi 2 pod alla volta
+          periodSeconds: 15             # ogni 15s invece di 30s
 
-    # ── Scale DOWN: conservativo ─────────────────────────────────────────────
-    # Con WebSocket: abbattere un pod disconnette i client.
-    # 5 minuti di stabilità prima di scalare down.
+    # Scale DOWN conservativo: evita di disconnettere client WS
     scaleDown:
       stabilizationWindowSeconds: 300
       policies:
         - type: Pods
-          value: 1                      # rimuovi al massimo 1 pod per volta
+          value: 1
           periodSeconds: 60

@@ -4,13 +4,16 @@
 
 # Server ASGI
 fastapi==0.111.0
-uvicorn[standard]==0.30.1   # include uvloop + websockets + httptools
-websockets==12.0
+uvicorn[standard]==0.30.1   # include uvloop + httptools
+
+# Socket.IO
+python-socketio==5.11.2     # server Socket.IO async
+# websockets rimosso: Socket.IO usa il suo transport layer
 
 # Redis (async, supporto Pub/Sub)
 redis[hiredis]==5.0.4       # hiredis = parser C, più veloce
 
-# Validazione dati (già incluso in FastAPI ma esplicito per chiarezza)
+# Validazione dati
 pydantic==2.7.1
 pydantic-settings==2.3.0    # gestione variabili d'ambiente
 

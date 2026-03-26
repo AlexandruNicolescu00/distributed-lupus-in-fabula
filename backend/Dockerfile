@@ -70,11 +70,12 @@ HEALTHCHECK --interval=20s --timeout=5s --start-period=10s --retries=3 \
 #   --ws websockets      → libreria WebSocket (alternativa: wsproto)
 #   --proxy-headers      → rispetta X-Forwarded-For da NGINX
 #   --forwarded-allow-ips → accetta proxy headers da qualsiasi IP interno
-CMD ["python", "-m", "uvicorn", "main:app", \
+# Uvicorn serve l'app composta FastAPI + Socket.IO.
+# Socket.IO gestisce internamente il transport WebSocket.
+CMD ["python", "-m", "uvicorn", "main:asgi_app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
      "--workers", "1", \
      "--loop", "uvloop", \
-     "--ws", "websockets", \
      "--proxy-headers", \
      "--forwarded-allow-ips", "*"]

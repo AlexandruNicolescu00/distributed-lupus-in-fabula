@@ -60,11 +60,11 @@ spec:
           # ── Risorse ───────────────────────────────────────────────────────
           resources:
             requests:
-              cpu:    "100m"   # base per lo scheduling
-              memory: "128Mi"
-            limits:
-              cpu:    "500m"   # l'HPA scala su CPU; tenere il limite ragionevole
+              cpu:    "250m"
               memory: "256Mi"
+            limits:
+              cpu:    "1000m"  # 1 core: gestisce ~100 WS attivi per replica
+              memory: "512Mi"
 
           # ── Liveness probe ─────────────────────────────────────────────────
           # Se fallisce N volte consecutive, K8s riavvia il container.
