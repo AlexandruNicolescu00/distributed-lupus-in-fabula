@@ -1,21 +1,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Persistenza dello stato di gioco su Redis.
-# Usa Redis come key-value store (NON Pub/Sub) per mantenere lo snapshot
-# corrente di ogni stanza, condiviso tra tutte le istanze backend.
-#
-# Questo permette a un client che si riconnette (anche su un'istanza diversa)
-# di ricevere lo stato aggiornato senza che nessun'altra istanza debba
-# rispondergli esplicitamente.
-#
-# Schema delle chiavi Redis:
-#   game:state:<room_id>   → JSON dello snapshot corrente della stanza
-#   game:players:<room_id> → SET dei client_id attualmente nella stanza
-#
-# TTL: 3600s — se una stanza è inattiva per 1 ora lo stato viene rimosso.
+# Persistenza dello stato di gioco su Redis - VERSIONE AGGIORNATA
+# Usa Redis Hash per memorizzare oggetti player completi (non solo ID)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import json
 import logging
+import time
 from typing import Any, Optional
 
 import redis.asyncio as aioredis
@@ -58,6 +48,22 @@ class GameStateStore:
 
     def _players_key(self, room_id: str) -> str:
         return f"{self._settings.redis_channel_prefix}:players:{room_id}"
+
+    def _now(self) -> float:
+        return time.time()
+
+    def _sort_players(self, players: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """
+        Ordina i player in modo deterministico.
+        Priorita: ordine di ingresso in lobby, poi player_id come fallback.
+        """
+        return sorted(
+            players,
+            key=lambda player: (
+                player.get("joined_at", float("inf")),
+                player.get("player_id", ""),
+            ),
+        )
 
     # ── Stato stanza ──────────────────────────────────────────────────────────
 
@@ -114,28 +120,130 @@ class GameStateStore:
             return
         await self._redis.delete(self._state_key(room_id), self._players_key(room_id))
 
-    # ── Registro player ───────────────────────────────────────────────────────
+    # ── Registro player (AGGIORNATO) ──────────────────────────────────────────
 
-    async def add_player(self, room_id: str, client_id: str) -> set[str]:
-        """Aggiunge un player al registro della stanza. Restituisce il set aggiornato."""
+    async def _get_players_list(self, room_id: str) -> list[dict[str, Any]]:
+        """Helper interno: restituisce la lista completa di oggetti player."""
         if not self._redis:
-            return {client_id}
-        await self._redis.sadd(self._players_key(room_id), client_id)
-        await self._redis.expire(self._players_key(room_id), STATE_TTL)
-        members = await self._redis.smembers(self._players_key(room_id))
-        return set(members)
+            return []
+        
+        players_raw = await self._redis.hgetall(self._players_key(room_id))
+        players = []
+        
+        for client_id, player_json in players_raw.items():
+            try:
+                player_obj = json.loads(player_json)
+                players.append(player_obj)
+            except json.JSONDecodeError:
+                logger.warning(f"Player data corrotto per {client_id} in {room_id}")
+                continue
 
-    async def remove_player(self, room_id: str, client_id: str) -> set[str]:
-        """Rimuove un player dal registro. Restituisce il set aggiornato."""
-        if not self._redis:
-            return set()
-        await self._redis.srem(self._players_key(room_id), client_id)
-        members = await self._redis.smembers(self._players_key(room_id))
-        return set(members)
+        return self._sort_players(players)
 
-    async def get_players(self, room_id: str) -> set[str]:
-        """Restituisce i client_id registrati nella stanza."""
+    async def add_player(self, room_id: str, client_id: str) -> list[dict[str, Any]]:
+        """
+        Aggiunge un player al registro della stanza. 
+        Restituisce la lista aggiornata di oggetti player completi.
+        
+        CAMBIAMENTO CHIAVE: ora restituisce list[dict] invece di set[str]
+        """
         if not self._redis:
-            return set()
-        members = await self._redis.smembers(self._players_key(room_id))
-        return set(members)
+            return [{
+                "player_id": client_id,
+                "name": client_id,
+                "ready": True,
+                "is_host": True,
+                "connected": True,
+                "joined_at": self._now(),
+            }]
+        
+        key = self._players_key(room_id)
+        
+        # Determina se questo player è l'host (primo ad entrare)
+        current_count = await self._redis.hlen(key)
+        is_host = (current_count == 0)
+        
+        # Crea l'oggetto player completo
+        player_data = {
+            "player_id": client_id,
+            "name": client_id,
+            "is_host": is_host,
+            "ready": is_host,
+            "connected": True,
+            "joined_at": self._now(),
+        }
+        
+        # Salva come JSON nella hash Redis
+        await self._redis.hset(key, client_id, json.dumps(player_data))
+        await self._redis.expire(key, STATE_TTL)
+        
+        # Restituisci tutti i player
+        return await self._get_players_list(room_id)
+
+    async def remove_player(self, room_id: str, client_id: str) -> list[dict[str, Any]]:
+        """
+        Rimuove un player dal registro. 
+        Restituisce la lista aggiornata di oggetti player.
+        
+        CAMBIAMENTO CHIAVE: ora restituisce list[dict] invece di set[str]
+        """
+        if not self._redis:
+            return []
+        
+        key = self._players_key(room_id)
+        await self._redis.hdel(key, client_id)
+        
+        # Se era l'host, promuovi in modo deterministico il player entrato prima.
+        players = await self._get_players_list(room_id)
+
+        if not players:
+            await self.delete_state(room_id)
+            return []
+
+        if players and not any(p.get("is_host") for p in players):
+            promoted_player = self._sort_players(players)[0]
+            promoted_player["is_host"] = True
+            promoted_player["ready"] = True
+            await self._redis.hset(
+                key,
+                promoted_player["player_id"],
+                json.dumps(promoted_player)
+            )
+            players = await self._get_players_list(room_id)
+
+        return players
+
+    async def get_players(self, room_id: str) -> list[dict[str, Any]]:
+        """
+        Restituisce gli oggetti player completi della stanza.
+        
+        CAMBIAMENTO CHIAVE: ora restituisce list[dict] invece di set[str]
+        """
+        return await self._get_players_list(room_id)
+
+    async def update_player_ready(self, room_id: str, client_id: str, ready: bool) -> Optional[dict[str, Any]]:
+        """
+        NUOVA FUNZIONE: Aggiorna lo stato ready di un player.
+        Restituisce l'oggetto player aggiornato o None se non trovato.
+        """
+        if not self._redis:
+            return None
+        
+        key = self._players_key(room_id)
+        player_json = await self._redis.hget(key, client_id)
+        
+        if not player_json:
+            logger.warning(f"Player {client_id} non trovato in {room_id}")
+            return None
+        
+        try:
+            player_data = json.loads(player_json)
+            player_data["ready"] = True if player_data.get("is_host") else ready
+            
+            await self._redis.hset(key, client_id, json.dumps(player_data))
+            await self._redis.expire(key, STATE_TTL)
+            
+            return player_data
+        except json.JSONDecodeError:
+            logger.error(f"Dati corrotti per player {client_id}")
+            return None

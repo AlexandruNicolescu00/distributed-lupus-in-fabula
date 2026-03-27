@@ -24,11 +24,12 @@ class EventType(StrEnum):
     # Gestione stanza
     PLAYER_JOINED = "player_joined"
     PLAYER_LEFT = "player_left"
+    PLAYER_READY = "player_ready"
     ROOM_CREATED = "room_created"
     ROOM_CLOSED = "room_closed"
 
     # Gameplay (placeholder — aggiornare con Membro 1)
-    GAME_START = "game_start"
+    GAME_START = "start_game"
     GAME_END = "game_end"
     GAME_STATE_SYNC = "game_state_sync"  # snapshot completo stato di gioco
     PLAYER_ACTION = "player_action"  # azione di un giocatore

@@ -14,20 +14,37 @@ export function useSocket() {
    * @param {object} options - opzioni socket.io (auth, query, ecc.)
    */
   function connect(url = import.meta.env.VITE_WS_URL ?? 'http://localhost:8000', options = {}) {
-    if (socket?.connected) return
+    // Se il socket esiste già ed è connesso, non fare nulla
+    if (socket?.connected) {
+      isConnected.value = true
+      return
+    }
 
-    socket = io(url, {
+    // Configurazione avanzata per il tuo backend distribuito
+    const config = {
       autoConnect: true,
       reconnection: true,
       reconnectionAttempts: 5,
       reconnectionDelay: 1500,
-      ...options,
-    })
+      // FIX CORS & 404: Forza l'uso dei WebSocket puri invece del polling HTTP
+      transports: ['websocket'], 
+      // FIX AUTH: Passa i dati richiesti dal tuo main.py (riga 76 del backend)
+      auth: {
+        client_id: options.auth?.client_id || localStorage.getItem('client_id'),
+        room_id: options.auth?.room_id || localStorage.getItem('room_id') || 'lobby',
+      },
+      ...options
+    }
 
+    console.log(`[Socket] Tentativo di connessione a ${url}...`, config.auth)
+
+    socket = io(url, config)
+
+    // Gestione Eventi di Sistema
     socket.on('connect', () => {
       isConnected.value = true
       error.value = null
-      console.log('[Socket] Connesso:', socket.id)
+      console.log('[Socket] Connesso con successo! ID:', socket.id)
     })
 
     socket.on('disconnect', (reason) => {
@@ -38,6 +55,11 @@ export function useSocket() {
     socket.on('connect_error', (err) => {
       error.value = err.message
       console.error('[Socket] Errore connessione:', err.message)
+      
+      // Se fallisce il websocket, potrebbe esserci un problema di rete o server
+      if (err.message === 'xhr poll error') {
+        console.error('[Socket] Errore critico: Il server non risponde o i CORS sono bloccati.')
+      }
     })
   }
 
@@ -45,9 +67,12 @@ export function useSocket() {
    * Disconnette e pulisce il socket
    */
   function disconnect() {
-    socket?.disconnect()
-    socket = null
-    isConnected.value = false
+    if (socket) {
+      socket.disconnect()
+      socket = null
+      isConnected.value = false
+      console.log('[Socket] Connessione chiusa manualmente')
+    }
   }
 
   /**
@@ -57,7 +82,7 @@ export function useSocket() {
    */
   function emit(event, data) {
     if (!socket?.connected) {
-      console.warn(`[Socket] Tentativo emit '${event}' senza connessione`)
+      console.warn(`[Socket] Impossibile inviare '${event}': socket non connesso`)
       return
     }
     socket.emit(event, data)
@@ -69,6 +94,9 @@ export function useSocket() {
    * @param {function} callback
    */
   function on(event, callback) {
+    if (!socket) {
+      console.warn(`[Socket] Attenzione: registro listener '${event}' prima di connettere`)
+    }
     socket?.on(event, callback)
   }
 
@@ -83,8 +111,8 @@ export function useSocket() {
 
   // Pulizia automatica quando il componente viene smontato
   onUnmounted(() => {
-    // Non disconnettiamo il socket globale, rimuoviamo solo i listener
-    // che questo componente ha registrato (gestito manualmente da chi usa on/off)
+    // Nota: Non chiudiamo il socket qui perché è un singleton globale,
+    // ma chi usa useSocket() dovrebbe usare off() se necessario.
   })
 
   return {

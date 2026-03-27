@@ -4,8 +4,7 @@ import { gameApi } from '@/services/api'
 import { useSocket } from '@/composables/useSocket'
 
 // -------------------------------------------------------
-// Fasi — allineate con Phase(str, Enum) in models/game.py
-// Valori MAIUSCOLO come da backend
+// Fasi — allineate con Phase(str, Enum) in backend
 // -------------------------------------------------------
 export const PHASES = {
   LOBBY:  'LOBBY',
@@ -16,8 +15,7 @@ export const PHASES = {
 }
 
 // -------------------------------------------------------
-// Ruoli — allineati con Role(str, Enum) in models/game.py
-// Valori MAIUSCOLO come da backend
+// Ruoli — allineati con Role(str, Enum) in backend
 // -------------------------------------------------------
 export const ROLES = {
   VILLAGER: 'VILLAGER',
@@ -26,7 +24,7 @@ export const ROLES = {
 }
 
 // -------------------------------------------------------
-// Vincitori — allineati con Winner(str, Enum) in models/game.py
+// Vincitori — allineati con Winner(str, Enum) in backend
 // -------------------------------------------------------
 export const WINNERS = {
   VILLAGERS: 'VILLAGERS',
@@ -39,10 +37,10 @@ export const useGameStore = defineStore('game', () => {
   const round           = ref(0)
   const players         = ref([])       // { player_id, username, role, alive, connected }
   const currentPlayerId = ref(null)
-  const myRole          = ref(null)     // uno dei ROLES
+  const myRole           = ref(null)     // uno dei ROLES
   const wolfCompanions  = ref([])       // [{ player_id, username }] — solo per i lupi
   const winner          = ref(null)     // uno dei WINNERS | null
-  const timerEnd        = ref(null)     // timestamp UNIX float (da backend) — era phaseDeadline
+  const timerEnd        = ref(null)     // timestamp UNIX float (da backend)
   const isLoading       = ref(false)
   const error           = ref(null)
   const isPaused        = ref(false)
@@ -64,20 +62,12 @@ export const useGameStore = defineStore('game', () => {
   const isSeer        = computed(() => myRole.value === ROLES.SEER)
   const isVillager    = computed(() => myRole.value === ROLES.VILLAGER)
 
-  /**
-   * Secondi rimanenti calcolati dal timestamp UNIX del backend.
-   * Il backend invia timer_end come float UNIX (es. 1718000000.0).
-   */
   const secondsLeft = computed(() => {
     if (!timerEnd.value) return null
     const nowSec = Date.now() / 1000
     return Math.max(0, Math.ceil(timerEnd.value - nowSec))
   })
 
-  /**
-   * Progresso percentuale del timer (100% = pieno, 0% = scaduto).
-   * Usa le durate di fase da settings.py del backend.
-   */
   const phaseDurations = { DAY: 120, VOTING: 60, NIGHT: 45 }
   const timerProgress = computed(() => {
     const total = phaseDurations[phase.value]
@@ -85,31 +75,65 @@ export const useGameStore = defineStore('game', () => {
     return (secondsLeft.value / total) * 100
   })
 
-  /**
-   * Conta i voti per ciascun target dal voteMap locale.
-   * Restituisce sempre un oggetto { targetId: count }.
-   */
   const voteCount = computed(() => {
     const counts = {}
-    
-    // Se voteMap è vuoto o undefined, restituisce oggetto vuoto
-    if (!voteMap.value || Object.keys(voteMap.value).length === 0) {
-      return counts
-    }
-    
-    // Conta i voti per ogni target
+    if (!voteMap.value || Object.keys(voteMap.value).length === 0) return counts
     Object.values(voteMap.value).forEach(target => {
-      if (target) {
-        counts[target] = (counts[target] || 0) + 1
-      }
+      if (target) counts[target] = (counts[target] || 0) + 1
     })
-    
     return counts
   })
 
+  function normalizePlayers(remotePlayers = []) {
+    if (!Array.isArray(remotePlayers)) return []
+
+    return remotePlayers.map((player) => ({
+      player_id: player.player_id ?? player.id,
+      username: player.username ?? player.name ?? player.player_id ?? player.id,
+      role: player.role ?? null,
+      alive: player.alive ?? true,
+      connected: player.connected ?? true,
+    }))
+  }
+
+  function bootstrapFromLobby(lobbyPlayers = [], playerId = null) {
+    const normalizedPlayers = normalizePlayers(lobbyPlayers)
+
+    if (normalizedPlayers.length > 0) {
+      players.value = normalizedPlayers
+    }
+
+    if (playerId) {
+      currentPlayerId.value = playerId
+    }
+
+    if (phase.value === PHASES.LOBBY) {
+      phase.value = PHASES.DAY
+    }
+  }
+
   // ---- ACTIONS ----
 
-  /** Carica lo stato della partita (resume dopo disconnessione) */
+  /** * Gestisce lo snapshot completo inviato dal backend (es. alla riconnessione).
+   * Il payload contiene 'state' (snapshot Redis) e 'players' (lista client_id).
+   */
+  function handleStateSync(payload) {
+    console.log('[GameStore] Ricevuto Full State Sync:', payload)
+    
+    // Se il payload contiene la chiave 'state' (formato RedisEvent del backend)
+    if (payload.state) {
+      _applyState(payload.state)
+    } else {
+      // Fallback nel caso il payload sia direttamente l'oggetto stato
+      _applyState(payload)
+    }
+
+    if (payload.players?.length) {
+      players.value = normalizePlayers(payload.players)
+    }
+  }
+
+  /** Carica lo stato iniziale via API REST */
   async function loadState(lobbyCode) {
     isLoading.value = true
     try {
@@ -122,114 +146,79 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
-  /** Vota un giocatore durante VOTING — emette cast_vote come da CastVoteEvent */
   async function vote(lobbyCode, targetId) {
-    try {
-      // Emit diretto via Socket.IO (come da events.py: CastVoteEvent)
-      emit('cast_vote', {
-        voter_id:  currentPlayerId.value,
-        target_id: targetId,
-      })
-    } catch (err) {
-      error.value = err.message
-    }
+    emit('cast_vote', { voter_id: currentPlayerId.value, target_id: targetId })
   }
 
-  /** Azione notturna lupo — emette wolf_vote come da WolfVoteEvent */
   async function wolfVote(targetId) {
-    emit('wolf_vote', {
-      wolf_id:   currentPlayerId.value,
-      target_id: targetId,
-    })
+    emit('wolf_vote', { wolf_id: currentPlayerId.value, target_id: targetId })
   }
 
-  /** Azione notturna veggente — emette seer_action come da SeerActionEvent */
   async function seerAction(targetId) {
-    emit('seer_action', {
-      seer_id:   currentPlayerId.value,
-      target_id: targetId,
-    })
+    emit('seer_action', { seer_id: currentPlayerId.value, target_id: targetId })
   }
 
-  /**
-   * Registra tutti i listener Socket.IO per gli eventi di gioco.
-   * Nomi e payload allineati con models/events.py della PR backend.
-   * Chiamare una volta sola quando si entra nella GameView.
-   */
+  /** Registra i listener Socket.IO */
   function listenToGameEvents() {
+    
+    // --- game_state_sync ---
+    // Fondamentale per la fault tolerance distribuita
+    on('game_state_sync', handleStateSync)
 
-    // --- phase_changed → PhaseChangedPayload ---
-    // { event, phase, round, timer_end }
+    // Il backend attuale ribatte start_game senza ancora pubblicare phase_changed.
+    // Portiamo comunque i client nella GameView e usiamo i dati lobby come base.
+    on('start_game', () => {
+      if (phase.value === PHASES.LOBBY) {
+        phase.value = PHASES.DAY
+      }
+    })
+
     on('phase_changed', ({ phase: newPhase, round: newRound, timer_end }) => {
-      phase.value             = newPhase        // es. "DAY", "VOTING", "NIGHT"
+      phase.value             = newPhase
       round.value             = newRound
-      timerEnd.value          = timer_end       // timestamp UNIX float
+      timerEnd.value          = timer_end
       isPaused.value          = false
       noElimination.value     = false
       seerResult.value        = null
       voteMap.value           = {}
     })
 
-    // --- role_assigned → RoleAssignedPayload ---
-    // { event, role, wolf_companions }
     on('role_assigned', ({ role, wolf_companions }) => {
-      myRole.value         = role               // es. "WOLF", "VILLAGER", "SEER"
+      myRole.value         = role
       wolfCompanions.value = wolf_companions ?? []
     })
 
-    // --- vote_update → VoteUpdatePayload ---
-    // { event, voter_id, target_id, vote_counts, skip_count }
     on('vote_update', ({ voter_id, target_id }) => {
       voteMap.value = { ...voteMap.value, [voter_id]: target_id }
     })
 
-    // --- player_eliminated → PlayerEliminatedPayload ---
-    // { event, player_id, username, role, round }
-    // Eliminazione di giorno — ruolo rivelato
     on('player_eliminated', ({ player_id, role: revealedRole }) => {
       const player = players.value.find((p) => p.player_id === player_id)
       if (player) {
         player.alive = false
-        player.role  = revealedRole   // ruolo rivelato alla community
+        player.role  = revealedRole
       }
     })
 
-    // --- player_killed → PlayerKilledPayload ---
-    // { event, player_id, username }
-    // Uccisione di notte — ruolo NON rivelato
     on('player_killed', ({ player_id }) => {
       const player = players.value.find((p) => p.player_id === player_id)
       if (player) player.alive = false
     })
 
-    // --- seer_result → SeerResultPayload ---
-    // { event, target_id, target_name, role }
-    // Unicast solo al veggente
     on('seer_result', ({ target_id, target_name, role }) => {
-      seerResult.value = {
-        targetId:   target_id,
-        targetName: target_name,
-        role,                         // es. "WOLF" o "VILLAGER"
-      }
+      seerResult.value = { targetId: target_id, targetName: target_name, role }
     })
 
-    // --- no_elimination → NoEliminationPayload ---
-    // { event, reason }  reason: "tie" | "no_votes"
     on('no_elimination', ({ reason }) => {
       noElimination.value       = true
       noEliminationReason.value = reason
     })
 
-    // --- game_ended → GameEndedPayload ---
-    // { event, winner, reason, round, players }
-    // winner: "VILLAGERS" | "WOLVES"
-    on('game_ended', ({ winner: w, reason, round: finalRound, players: finalPlayers }) => {
+    on('game_ended', ({ winner: w, round: finalRound, players: finalPlayers }) => {
       winner.value          = w
       phase.value           = PHASES.ENDED
       round.value           = finalRound
       gameEndPlayers.value  = finalPlayers ?? []
-
-      // Aggiorna la lista locale con i ruoli rivelati
       if (finalPlayers?.length) {
         players.value = finalPlayers.map((fp) => ({
           player_id: fp.player_id,
@@ -241,15 +230,11 @@ export const useGameStore = defineStore('game', () => {
       }
     })
 
-    // --- game_paused → GamePausedPayload ---
-    // { event, reason }
     on('game_paused', ({ reason }) => {
       isPaused.value    = true
       pauseReason.value = reason ?? ''
     })
 
-    // --- game_resumed → GameResumedPayload ---
-    // { event, phase, timer_end }
     on('game_resumed', ({ phase: resumePhase, timer_end }) => {
       isPaused.value = false
       if (resumePhase) phase.value   = resumePhase
@@ -275,31 +260,27 @@ export const useGameStore = defineStore('game', () => {
     error.value               = null
   }
 
-  // ---- PRIVATO ----
   function _applyState(data) {
-    phase.value           = data.phase          ?? PHASES.LOBBY
-    round.value           = data.round          ?? 0
-    players.value         = data.players        ?? []
+    phase.value           = data.phase           ?? PHASES.LOBBY
+    round.value           = data.round           ?? 0
+    players.value         = data.players         ?? []
     currentPlayerId.value = data.currentPlayerId ?? currentPlayerId.value
-    myRole.value          = data.myRole         ?? null
-    winner.value          = data.winner         ?? null
-    timerEnd.value        = data.timer_end      ?? null   // snake_case come dal backend
-    isPaused.value        = data.paused         ?? false  
-    voteMap.value         = data.voteMap        ?? {}
+    myRole.value          = data.myRole          ?? null
+    winner.value          = data.winner          ?? null
+    timerEnd.value        = data.timer_end       ?? null // Mappatura snake_case da Redis
+    isPaused.value        = data.paused          ?? false  
+    voteMap.value         = data.voteMap         ?? {}
   }
 
   return {
-    // state
     phase, round, players, currentPlayerId, myRole, wolfCompanions,
     winner, timerEnd, isLoading, error, isPaused, pauseReason,
     seerResult, noElimination, noEliminationReason, voteMap,
     gameEndPlayers,
-    // getters
     alivePlayers, deadPlayers, me, isAlive, isWolf, isSeer, isVillager,
     secondsLeft, timerProgress, voteCount,
-    // actions
-    loadState, vote, wolfVote, seerAction, listenToGameEvents, reset,
-    // costanti esportate
+    normalizePlayers, bootstrapFromLobby, loadState, handleStateSync,
+    vote, wolfVote, seerAction, listenToGameEvents, reset,
     PHASES, ROLES, WINNERS,
   }
 })

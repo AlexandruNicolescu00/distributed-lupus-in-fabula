@@ -1,11 +1,5 @@
-# Entry point FastAPI + Socket.IO.
-#
-# Socket.IO viene montato come ASGI app separata e composta con FastAPI
-# tramite socketio.ASGIApp. Uvicorn serve l'app composta.
-#
-# URL client:
-#   Connessione:  http://game.local/socket.io/  (Socket.IO negozia il transport)
-#   Evento emit:  socket.emit('player_action', { room_id, payload })
+# Entry point FastAPI + Socket.IO - VERSIONE AGGIORNATA
+# Gestisce correttamente gli oggetti player completi invece di soli ID
 
 import logging
 import uuid
@@ -33,7 +27,6 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # ── Socket.IO server ──────────────────────────────────────────────────────────
-# cors_allowed_origins="*" per sviluppo; restringere in produzione.
 sio = socketio.AsyncServer(
     async_mode="asgi",
     cors_allowed_origins="*",
@@ -82,15 +75,14 @@ async def health():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SOCKET.IO EVENT HANDLERS
+# SOCKET.IO EVENT HANDLERS - VERSIONE AGGIORNATA
 # ══════════════════════════════════════════════════════════════════════════════
 
 @sio.event
 async def connect(sid: str, environ: dict, auth: dict | None = None):
     """
     Triggered quando un client si connette.
-    Il client deve inviare auth={client_id, room_id} oppure
-    passarli come query params: /socket.io/?client_id=xxx&room_id=yyy
+    AGGIORNAMENTO: ora invia oggetti player completi invece di solo ID
     """
     # Estrai client_id e room_id da auth o query string
     client_id = None
@@ -101,7 +93,6 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
         room_id   = auth.get("room_id")
 
     if not client_id or not room_id:
-        # Fallback: leggi dalla query string WSGI
         query = environ.get("QUERY_STRING", "")
         params = dict(p.split("=") for p in query.split("&") if "=" in p)
         client_id = client_id or params.get("client_id") or str(uuid.uuid4())
@@ -113,23 +104,25 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     # Entra nella Socket.IO room
     await sio.enter_room(sid, room_id)
 
-    # Registra nel ConnectionManager (per metriche e health check)
+    # Registra nel ConnectionManager
     connection_manager.connect(sid, room_id, client_id)
 
-    # Sottoscrivi questa istanza al canale Redis della stanza
+    # Sottoscrivi questa istanza al canale Redis
     await pubsub_manager.subscribe_room(room_id)
 
-    # Recupera stato persistente e lista player
-    players       = await state_store.add_player(room_id, client_id)
+    # ═══════════════════════════════════════════════════════════════════════
+    # AGGIORNAMENTO PRINCIPALE: add_player ora restituisce list[dict]
+    # ═══════════════════════════════════════════════════════════════════════
+    players = await state_store.add_player(room_id, client_id)
     current_state = await state_store.get_state(room_id)
 
-    # Invia state sync al solo client che si (ri)connette
+    # Invia sync al solo client che si (ri)connette
     if current_state is not None:
         sync_event = RedisEvent(
             event_type=EventType.GAME_STATE_SYNC,
             room_id=room_id,
             sender_id=INSTANCE_ID,
-            payload={"state": current_state, "players": list(players)},
+            payload={"state": current_state, "players": players},  # players è già list[dict]
         )
         ws_msg = WSMessage.from_redis_event(sync_event)
         await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), to=sid)
@@ -139,9 +132,10 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
         event_type=EventType.PLAYER_JOINED,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"client_id": client_id, "players": list(players)},
+        payload={"client_id": client_id, "players": players},  # players è già list[dict]
     )
     ws_msg = WSMessage.from_redis_event(join_event)
+    
     # Emetti nella room escludendo il nuovo arrivato (skip_sid)
     await sio.emit(EventType.PLAYER_JOINED, ws_msg.model_dump(),
                    room=room_id, skip_sid=sid)
@@ -150,7 +144,10 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
 
 @sio.event
 async def disconnect(sid: str):
-    """Triggered quando un client si disconnette."""
+    """
+    Triggered quando un client si disconnette.
+    AGGIORNAMENTO: now invia oggetti player completi
+    """
     room_id   = connection_manager.get_room_of(sid)
     client_id = connection_manager.get_client_id(sid)
 
@@ -161,13 +158,16 @@ async def disconnect(sid: str):
 
     connection_manager.disconnect(sid, room_id)
 
+    # ═══════════════════════════════════════════════════════════════════════
+    # AGGIORNAMENTO: remove_player ora restituisce list[dict]
+    # ═══════════════════════════════════════════════════════════════════════
     remaining = await state_store.remove_player(room_id, client_id or sid)
 
     leave_event = RedisEvent(
         event_type=EventType.PLAYER_LEFT,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"client_id": client_id, "players": list(remaining)},
+        payload={"client_id": client_id, "players": remaining},  # remaining è list[dict]
     )
     ws_msg = WSMessage.from_redis_event(leave_event)
 
@@ -184,7 +184,8 @@ async def disconnect(sid: str):
 async def catch_all(event: str, sid: str, data: dict):
     """
     Handler generico per tutti gli altri eventi inviati dal client.
-    Il client emette: socket.emit('player_action', { room_id, payload })
+    
+    AGGIORNAMENTO: gestisce correttamente 'player_ready' aggiornando Redis
     """
     room_id   = connection_manager.get_room_of(sid)
     client_id = connection_manager.get_client_id(sid) or sid
@@ -203,12 +204,43 @@ async def catch_all(event: str, sid: str, data: dict):
 
     payload = data if isinstance(data, dict) else {"raw": data}
 
-    redis_event = RedisEvent(
-        event_type=event,
-        room_id=room_id,
-        sender_id=INSTANCE_ID,
-        payload={**payload, "client_id": client_id},
-    )
+    # ═══════════════════════════════════════════════════════════════════════
+    # AGGIORNAMENTO: gestione speciale per 'player_ready'
+    # ═══════════════════════════════════════════════════════════════════════
+    if event == EventType.PLAYER_READY:
+        ready_state = payload.get("ready", True)
+        updated_player = await state_store.update_player_ready(room_id, client_id, ready_state)
+        
+        if updated_player:
+            # Ottieni la lista aggiornata di tutti i player
+            all_players = await state_store.get_players(room_id)
+            
+            redis_event = RedisEvent(
+                event_type=event,
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload={
+                    "client_id": client_id,
+                    "ready": ready_state,
+                    "players": all_players  # Invia sempre la lista completa
+                },
+            )
+        else:
+            # Fallback se il player non è stato trovato
+            redis_event = RedisEvent(
+                event_type=event,
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload={**payload, "client_id": client_id},
+            )
+    else:
+        # Altri eventi (start_game, kick_player, ecc.)
+        redis_event = RedisEvent(
+            event_type=event,
+            room_id=room_id,
+            sender_id=INSTANCE_ID,
+            payload={**payload, "client_id": client_id},
+        )
 
     # Aggiorna stato persistente per eventi rilevanti
     if event in (EventType.GAME_STATE_SYNC, EventType.PLAYER_ACTION):
@@ -230,7 +262,6 @@ async def catch_all(event: str, sid: str, data: dict):
 
 
 # ── App ASGI composta ─────────────────────────────────────────────────────────
-# Socket.IO intercetta /socket.io/*, FastAPI gestisce tutto il resto.
 asgi_app = socketio.ASGIApp(
     socketio_server=sio,
     other_asgi_app=app,
