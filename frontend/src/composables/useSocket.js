@@ -3,6 +3,17 @@ import { io } from 'socket.io-client'
 
 // Istanza singleton — una sola connessione per tutta l'app
 let socket = null
+const pendingListeners = new Map()
+
+function bindPendingListeners() {
+  if (!socket) return
+
+  for (const [event, callbacks] of pendingListeners.entries()) {
+    callbacks.forEach((callback) => {
+      socket.on(event, callback)
+    })
+  }
+}
 
 export function useSocket() {
   const isConnected = ref(false)
@@ -39,6 +50,7 @@ export function useSocket() {
     console.log(`[Socket] Tentativo di connessione a ${url}...`, config.auth)
 
     socket = io(url, config)
+    bindPendingListeners()
 
     // Gestione Eventi di Sistema
     socket.on('connect', () => {
@@ -96,6 +108,11 @@ export function useSocket() {
   function on(event, callback) {
     if (!socket) {
       console.warn(`[Socket] Attenzione: registro listener '${event}' prima di connettere`)
+      if (!pendingListeners.has(event)) {
+        pendingListeners.set(event, new Set())
+      }
+      pendingListeners.get(event).add(callback)
+      return
     }
     socket?.on(event, callback)
   }
@@ -106,6 +123,10 @@ export function useSocket() {
    * @param {function} callback
    */
   function off(event, callback) {
+    pendingListeners.get(event)?.delete(callback)
+    if (pendingListeners.get(event)?.size === 0) {
+      pendingListeners.delete(event)
+    }
     socket?.off(event, callback)
   }
 

@@ -8,7 +8,6 @@ export const useChatStore = defineStore('chat', () => {
   const messages = ref([])   // { id, senderId, senderName, text, channel, timestamp }
   const isOpen = ref(false)
   const unreadCount = ref(0)
-
   const { emit, on } = useSocket()
 
   // ---- CANALI ----

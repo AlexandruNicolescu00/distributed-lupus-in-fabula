@@ -41,6 +41,8 @@ export const useGameStore = defineStore('game', () => {
   const wolfCompanions  = ref([])       // [{ player_id, username }] — solo per i lupi
   const winner          = ref(null)     // uno dei WINNERS | null
   const timerEnd        = ref(null)     // timestamp UNIX float (da backend)
+  const pendingRoleSetup = ref({ wolves: 1, seers: 1, villagers: 3 })
+  const currentRoomCode = ref('')
   const isLoading       = ref(false)
   const error           = ref(null)
   const isPaused        = ref(false)
@@ -96,16 +98,92 @@ export const useGameStore = defineStore('game', () => {
     }))
   }
 
-  function bootstrapFromLobby(lobbyPlayers = [], playerId = null) {
+  function normalizeRoleSetup(totalPlayers, roleSetup = pendingRoleSetup.value) {
+    const safeTotal = Math.max(0, totalPlayers)
+    let seers = Math.min(Math.max(roleSetup?.seers ?? 0, 0), safeTotal >= 5 ? 1 : 0)
+    let wolves = Math.max(1, roleSetup?.wolves ?? 1)
+
+    const wolvesCap = Math.max(1, Math.floor((Math.max(safeTotal - seers, 0) - 1) / 2))
+    wolves = Math.min(wolves, wolvesCap)
+
+    let villagers = Math.max(0, safeTotal - wolves - seers)
+
+    while (villagers <= wolves && wolves > 1) {
+      wolves -= 1
+      villagers = Math.max(0, safeTotal - wolves - seers)
+    }
+
+    while (villagers <= wolves && seers > 0) {
+      seers -= 1
+      villagers = Math.max(0, safeTotal - wolves - seers)
+    }
+
+    return { wolves, seers, villagers }
+  }
+
+  function makeSeed(input) {
+    let seed = 2166136261
+    for (const char of input) {
+      seed ^= char.charCodeAt(0)
+      seed = Math.imul(seed, 16777619)
+    }
+    return seed >>> 0
+  }
+
+  function seededShuffle(items, seedInput) {
+    const shuffled = [...items]
+    let seed = makeSeed(seedInput)
+
+    for (let index = shuffled.length - 1; index > 0; index -= 1) {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
+      const swapIndex = seed % (index + 1)
+      ;[shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]]
+    }
+
+    return shuffled
+  }
+
+  function assignLocalRoles(normalizedPlayers, roleSetup, roomCode = '') {
+    const totalPlayers = normalizedPlayers.length
+    if (totalPlayers === 0) return []
+
+    const normalizedSetup = normalizeRoleSetup(totalPlayers, roleSetup)
+    const rolePool = [
+      ...Array(normalizedSetup.wolves).fill(ROLES.WOLF),
+      ...Array(normalizedSetup.seers).fill(ROLES.SEER),
+      ...Array(normalizedSetup.villagers).fill(ROLES.VILLAGER),
+    ]
+
+    const shuffledRoles = seededShuffle(
+      rolePool,
+      `${roomCode}:${normalizedPlayers.map((player) => player.player_id).join('|')}`
+    )
+
+    return normalizedPlayers.map((player, index) => ({
+      ...player,
+      role: shuffledRoles[index] ?? ROLES.VILLAGER,
+      alive: player.alive ?? true,
+    }))
+  }
+
+  function bootstrapFromLobby(lobbyPlayers = [], playerId = null, roleSetup = null, roomCode = '') {
     const normalizedPlayers = normalizePlayers(lobbyPlayers)
+    const effectiveRoleSetup = normalizeRoleSetup(
+      normalizedPlayers.length,
+      roleSetup ?? pendingRoleSetup.value
+    )
 
     if (normalizedPlayers.length > 0) {
-      players.value = normalizedPlayers
+      players.value = assignLocalRoles(normalizedPlayers, effectiveRoleSetup, roomCode)
     }
 
     if (playerId) {
       currentPlayerId.value = playerId
     }
+
+    currentRoomCode.value = roomCode || currentRoomCode.value
+    pendingRoleSetup.value = effectiveRoleSetup
+    myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? null
 
     if (phase.value === PHASES.LOBBY) {
       phase.value = PHASES.DAY
@@ -129,7 +207,12 @@ export const useGameStore = defineStore('game', () => {
     }
 
     if (payload.players?.length) {
-      players.value = normalizePlayers(payload.players)
+      const normalizedPlayers = normalizePlayers(payload.players)
+      const rolesMissing = normalizedPlayers.every((player) => !player.role)
+      players.value = rolesMissing
+        ? assignLocalRoles(normalizedPlayers, pendingRoleSetup.value, currentRoomCode.value)
+        : normalizedPlayers
+      myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
     }
   }
 
@@ -137,6 +220,7 @@ export const useGameStore = defineStore('game', () => {
   async function loadState(lobbyCode) {
     isLoading.value = true
     try {
+      currentRoomCode.value = lobbyCode
       const data = await gameApi.getState(lobbyCode)
       _applyState(data)
     } catch (err) {
@@ -160,14 +244,21 @@ export const useGameStore = defineStore('game', () => {
 
   /** Registra i listener Socket.IO */
   function listenToGameEvents() {
-    
     // --- game_state_sync ---
     // Fondamentale per la fault tolerance distribuita
     on('game_state_sync', handleStateSync)
 
     // Il backend attuale ribatte start_game senza ancora pubblicare phase_changed.
     // Portiamo comunque i client nella GameView e usiamo i dati lobby come base.
-    on('start_game', () => {
+    on('start_game', (data = {}) => {
+      pendingRoleSetup.value = normalizeRoleSetup(
+        players.value.length || data.payload?.players?.length || 0,
+        data.payload?.role_setup ?? pendingRoleSetup.value
+      )
+      if (players.value.length > 0 && players.value.every((player) => !player.role)) {
+        players.value = assignLocalRoles(players.value, pendingRoleSetup.value, currentRoomCode.value)
+        myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
+      }
       if (phase.value === PHASES.LOBBY) {
         phase.value = PHASES.DAY
       }
@@ -250,6 +341,8 @@ export const useGameStore = defineStore('game', () => {
     wolfCompanions.value      = []
     winner.value              = null
     timerEnd.value            = null
+    pendingRoleSetup.value    = { wolves: 1, seers: 1, villagers: 3 }
+    currentRoomCode.value     = ''
     isPaused.value            = false
     pauseReason.value         = ''
     seerResult.value          = null
@@ -263,9 +356,20 @@ export const useGameStore = defineStore('game', () => {
   function _applyState(data) {
     phase.value           = data.phase           ?? PHASES.LOBBY
     round.value           = data.round           ?? 0
-    players.value         = data.players         ?? []
+    if (data.role_setup) {
+      pendingRoleSetup.value = normalizeRoleSetup(
+        Array.isArray(data.players) ? data.players.length : players.value.length,
+        data.role_setup
+      )
+    }
+
+    const normalizedPlayers = normalizePlayers(data.players ?? [])
+    const rolesMissing = normalizedPlayers.length > 0 && normalizedPlayers.every((player) => !player.role)
+    players.value = rolesMissing
+      ? assignLocalRoles(normalizedPlayers, pendingRoleSetup.value, currentRoomCode.value)
+      : normalizedPlayers
     currentPlayerId.value = data.currentPlayerId ?? currentPlayerId.value
-    myRole.value          = data.myRole          ?? null
+    myRole.value          = data.myRole ?? players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
     winner.value          = data.winner          ?? null
     timerEnd.value        = data.timer_end       ?? null // Mappatura snake_case da Redis
     isPaused.value        = data.paused          ?? false  
@@ -279,7 +383,7 @@ export const useGameStore = defineStore('game', () => {
     gameEndPlayers,
     alivePlayers, deadPlayers, me, isAlive, isWolf, isSeer, isVillager,
     secondsLeft, timerProgress, voteCount,
-    normalizePlayers, bootstrapFromLobby, loadState, handleStateSync,
+    normalizeRoleSetup, normalizePlayers, bootstrapFromLobby, loadState, handleStateSync,
     vote, wolfVote, seerAction, listenToGameEvents, reset,
     PHASES, ROLES, WINNERS,
   }

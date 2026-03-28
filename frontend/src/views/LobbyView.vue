@@ -87,6 +87,11 @@ function handleKick(id)      {
   lobbyStore.kickPlayer(id) 
 }
 
+function changeRole(role, delta) {
+  if (!lobbyStore.isHost) return
+  lobbyStore.adjustRole(role, delta)
+}
+
 function handleStart() {
   if (lobbyStore.isHost && lobbyStore.allReady) {
     lobbyStore.startGame() 
@@ -131,7 +136,10 @@ function toCardPlayer(p) {
 const settingsRows = computed(() => [
   { label: 'Min giocatori', value: MIN_PLAYERS },
   { label: 'Max giocatori', value: MAX_PLAYERS },
-  { label: 'Pronti',         value: `${lobbyStore.readyCount} / ${Math.max(0, lobbyStore.players.length - 1)}` }, // Modificato per non contare l'host nel totale target
+  { label: 'Pronti',         value: `${lobbyStore.readyCount} / ${Math.max(0, lobbyStore.players.length - 1)}` },
+  { label: 'Lupi',           value: lobbyStore.roleSummary.wolves },
+  { label: 'Veggenti',       value: lobbyStore.roleSummary.seers },
+  { label: 'Villici',        value: lobbyStore.roleSummary.villagers },
 ])
 </script>
 
@@ -218,6 +226,44 @@ const settingsRows = computed(() => [
               <span>🔮 Veggente</span>
             </div>
             <p class="role-info">I ruoli verranno assegnati casualmente all'inizio.</p>
+            <div class="role-config">
+              <div class="role-row">
+                <span>Lupi</span>
+                <div class="role-controls">
+                  <button
+                    class="role-btn"
+                    :disabled="!lobbyStore.isHost || lobbyStore.roleSummary.wolves <= 1"
+                    @click="changeRole('wolves', -1)"
+                  >-</button>
+                  <strong>{{ lobbyStore.roleSummary.wolves }}</strong>
+                  <button
+                    class="role-btn"
+                    :disabled="!lobbyStore.isHost || lobbyStore.roleSummary.wolves >= lobbyStore.maxWolves"
+                    @click="changeRole('wolves', 1)"
+                  >+</button>
+                </div>
+              </div>
+              <div class="role-row">
+                <span>Veggente</span>
+                <div class="role-controls">
+                  <button
+                    class="role-btn"
+                    :disabled="!lobbyStore.isHost || lobbyStore.roleSummary.seers <= 0"
+                    @click="changeRole('seers', -1)"
+                  >-</button>
+                  <strong>{{ lobbyStore.roleSummary.seers }}</strong>
+                  <button
+                    class="role-btn"
+                    :disabled="!lobbyStore.isHost || lobbyStore.roleSummary.seers >= lobbyStore.maxSeers"
+                    @click="changeRole('seers', 1)"
+                  >+</button>
+                </div>
+              </div>
+              <div class="role-row">
+                <span>Villici</span>
+                <strong>{{ lobbyStore.roleSummary.villagers }}</strong>
+              </div>
+            </div>
           </div>
 
           <div class="actions-footer">
@@ -300,6 +346,11 @@ const settingsRows = computed(() => [
 .role-preview { display: flex; flex-wrap: wrap; gap: 0.8rem; margin-bottom: 1rem; }
 .role-preview span { background: rgba(255,255,255,0.05); padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.85rem; }
 .role-info { font-size: 0.75rem; color: rgba(255,255,255,0.3); font-style: italic; line-height: 1.4; }
+.role-config { display: flex; flex-direction: column; gap: 0.8rem; margin-top: 1rem; }
+.role-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; font-size: 0.9rem; }
+.role-controls { display: flex; align-items: center; gap: 0.6rem; }
+.role-btn { width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgba(232,200,122,0.3); background: rgba(232,200,122,0.05); color: #e8c87a; cursor: pointer; }
+.role-btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 /* Action Buttons */
 .actions-footer { display: flex; flex-direction: column; gap: 0.8rem; }

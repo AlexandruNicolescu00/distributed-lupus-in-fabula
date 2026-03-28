@@ -116,16 +116,16 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     players = await state_store.add_player(room_id, client_id)
     current_state = await state_store.get_state(room_id)
 
-    # Invia sync al solo client che si (ri)connette
-    if current_state is not None:
-        sync_event = RedisEvent(
-            event_type=EventType.GAME_STATE_SYNC,
-            room_id=room_id,
-            sender_id=INSTANCE_ID,
-            payload={"state": current_state, "players": players},  # players è già list[dict]
-        )
-        ws_msg = WSMessage.from_redis_event(sync_event)
-        await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), to=sid)
+    # Invia sempre uno snapshot iniziale al client che si connette.
+    # Anche senza stato partita, la lobby deve ricevere la lista players.
+    sync_event = RedisEvent(
+        event_type=EventType.GAME_STATE_SYNC,
+        room_id=room_id,
+        sender_id=INSTANCE_ID,
+        payload={"state": current_state or {}, "players": players},
+    )
+    ws_msg = WSMessage.from_redis_event(sync_event)
+    await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), to=sid)
 
     # Notifica tutti gli altri client (locale + altre istanze via Redis)
     join_event = RedisEvent(
@@ -157,6 +157,12 @@ async def disconnect(sid: str):
     logger.info("disconnect | sid=%s client=%s room=%s", sid[:8], client_id, room_id)
 
     connection_manager.disconnect(sid, room_id)
+    if client_id and connection_manager.client_connections_in_room(room_id, client_id) > 0:
+        logger.info(
+            "client ancora connesso su un'altra socket | client=%s room=%s",
+            client_id, room_id
+        )
+        return
 
     # ═══════════════════════════════════════════════════════════════════════
     # AGGIORNAMENTO: remove_player ora restituisce list[dict]
@@ -233,6 +239,15 @@ async def catch_all(event: str, sid: str, data: dict):
                 sender_id=INSTANCE_ID,
                 payload={**payload, "client_id": client_id},
             )
+    elif event == EventType.ROLE_SETUP_UPDATED:
+        role_setup = payload.get("role_setup", {})
+        await state_store.update_state(room_id, {"role_setup": role_setup})
+        redis_event = RedisEvent(
+            event_type=event,
+            room_id=room_id,
+            sender_id=INSTANCE_ID,
+            payload={"client_id": client_id, "role_setup": role_setup},
+        )
     else:
         # Altri eventi (start_game, kick_player, ecc.)
         redis_event = RedisEvent(

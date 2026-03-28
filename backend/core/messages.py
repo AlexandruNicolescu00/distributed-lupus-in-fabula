@@ -25,6 +25,7 @@ class EventType(StrEnum):
     PLAYER_JOINED = "player_joined"
     PLAYER_LEFT = "player_left"
     PLAYER_READY = "player_ready"
+    ROLE_SETUP_UPDATED = "role_setup_updated"
     ROOM_CREATED = "room_created"
     ROOM_CLOSED = "room_closed"
 

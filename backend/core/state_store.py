@@ -158,7 +158,6 @@ class GameStateStore:
             }]
         
         key = self._players_key(room_id)
-        
         # Determina se questo player è l'host (primo ad entrare)
         current_count = await self._redis.hlen(key)
         is_host = (current_count == 0)

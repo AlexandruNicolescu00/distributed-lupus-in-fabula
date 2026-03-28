@@ -10,6 +10,7 @@ import { useSocket } from '@/composables/useSocket' //
 import ChatBox    from '@/components/ChatBox.vue'
 import PhaseTimer from '@/components/PhaseTimer.vue'
 import InfoBox    from '@/components/InfoBox.vue'
+import PlayerCard from '@/components/PlayerCard.vue'
 
 // ---- SETUP ROUTING E STORES ----
 const router = useRouter()
@@ -46,7 +47,12 @@ onMounted(async () => {
     localStorage.setItem('client_id', clientId)
   }
   game.currentPlayerId = clientId
-  game.bootstrapFromLobby(lobby.players, clientId)
+  game.bootstrapFromLobby(
+    lobby.players,
+    clientId,
+    lobby.isHost ? lobby.roleSummary : null,
+    lobbyCode
+  )
 
   // 3. Connessione al Backend (via Ingress NGINX /socket.io/)
   // Passiamo auth per permettere al backend di mappare sid -> client_id
@@ -132,6 +138,20 @@ const sidebarRows = computed(() => [
   { label: 'Vivi',      value: visiblePlayers.value.filter((p) => p.alive).length },
   { label: 'Eliminati', value: visiblePlayers.value.filter((p) => !p.alive).length },
 ])
+
+const ownPlayerCard = computed(() => {
+  const me = visiblePlayers.value.find((player) => player.player_id === game.currentPlayerId)
+  if (!me) return null
+
+  return {
+    player_id: me.player_id,
+    username: me.username,
+    role: me.role,
+    ready: true,
+    alive: me.alive,
+    connected: me.connected,
+  }
+})
 
 // ---- FUNZIONI AZIONE (Inviano eventi via Socket.IO -> Redis PubSub) ----
 function castVote(targetId) {
@@ -259,6 +279,15 @@ function initials(name) { return (name ?? '?').slice(0, 2).toUpperCase() }
           </div>
         </div>
 
+        <div v-if="ownPlayerCard" class="revealed-card">
+          <div class="panel-title">La Tua Carta</div>
+          <PlayerCard
+            :player="ownPlayerCard"
+            :is-me="true"
+            :show-role="true"
+          />
+        </div>
+
         <InfoBox title="Cronologia" :rows="sidebarRows" />
 
         <div class="action-feedback">
@@ -307,6 +336,7 @@ function initials(name) { return (name ?? '?').slice(0, 2).toUpperCase() }
 .role-card { padding: 1.5rem; background: rgba(232, 200, 122, 0.05); border: 1px solid rgba(232, 200, 122, 0.1); border-radius: 16px; text-align: center; }
 .role-card-icon { font-size: 3rem; margin-bottom: 0.5rem; }
 .role-card-name { font-family: 'Cinzel', serif; color: #e8c87a; font-size: 1.2rem; }
+.revealed-card { display: flex; flex-direction: column; gap: 0.8rem; }
 
 .action-feedback { padding: 1rem; background: rgba(129, 140, 248, 0.1); border-radius: 10px; font-size: 0.85rem; border: 1px solid rgba(129, 140, 248, 0.2); }
 
