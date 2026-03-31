@@ -5,11 +5,16 @@ import { io } from 'socket.io-client'
 let socket = null
 const pendingListeners = new Map()
 
+function getStoredValue(key) {
+  return sessionStorage.getItem(key) || localStorage.getItem(key)
+}
+
 function bindPendingListeners() {
   if (!socket) return
 
   for (const [event, callbacks] of pendingListeners.entries()) {
     callbacks.forEach((callback) => {
+      socket.off(event, callback)
       socket.on(event, callback)
     })
   }
@@ -41,8 +46,8 @@ export function useSocket() {
       transports: ['websocket'], 
       // FIX AUTH: Passa i dati richiesti dal tuo main.py (riga 76 del backend)
       auth: {
-        client_id: options.auth?.client_id || localStorage.getItem('client_id'),
-        room_id: options.auth?.room_id || localStorage.getItem('room_id') || 'lobby',
+        client_id: options.auth?.client_id || getStoredValue('client_id'),
+        room_id: options.auth?.room_id || getStoredValue('room_id') || 'lobby',
       },
       ...options
     }
@@ -106,15 +111,18 @@ export function useSocket() {
    * @param {function} callback
    */
   function on(event, callback) {
+    if (!pendingListeners.has(event)) {
+      pendingListeners.set(event, new Set())
+    }
+    pendingListeners.get(event).add(callback)
+
     if (!socket) {
       console.warn(`[Socket] Attenzione: registro listener '${event}' prima di connettere`)
-      if (!pendingListeners.has(event)) {
-        pendingListeners.set(event, new Set())
-      }
-      pendingListeners.get(event).add(callback)
       return
     }
-    socket?.on(event, callback)
+
+    socket.off(event, callback)
+    socket.on(event, callback)
   }
 
   /**

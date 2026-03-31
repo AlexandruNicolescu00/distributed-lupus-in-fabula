@@ -9,7 +9,6 @@ const game = useGameStore()
 const chatInput = ref('')
 const messagesEl = ref(null)
 
-// Scroll automatico all'ultimo messaggio
 watch(
   () => chat.visibleMessages.length,
   async () => {
@@ -20,24 +19,21 @@ watch(
   }
 )
 
-// Label canale attivo
 const channelLabel = computed(() => {
-  if (chat.activeChannel === chat.CHANNELS.WOLVES) return '🐺 Lupi'
-  if (chat.activeChannel === chat.CHANNELS.DEAD)   return '💀 Spettatori'
-  return '🌍 Globale'
+  if (chat.activeChannel === chat.CHANNELS.WOLVES) return 'Lupi'
+  if (chat.activeChannel === chat.CHANNELS.DEAD) return 'Spettatori'
+  return 'Globale'
 })
 
-// Formatta timestamp in HH:MM
 function formatTime(iso) {
   try {
-    const d = new Date(iso)
-    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+    const date = new Date(iso)
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
   } catch {
     return ''
   }
 }
 
-// Controlla se il messaggio è mio
 function isMe(msg) {
   return msg.senderId === game.currentPlayerId
 }
@@ -45,23 +41,12 @@ function isMe(msg) {
 function send() {
   if (!chatInput.value.trim() || !chat.canChat) return
   chat.sendMessage(chatInput.value.trim())
-
-  // Mock locale — rimuovere quando il backend emette il messaggio tornato
-  chat.messages.push({
-    id: Date.now(),
-    senderId: game.currentPlayerId,
-    senderName: game.me?.username ?? 'Tu',
-    text: chatInput.value.trim(),
-    channel: chat.activeChannel,
-    timestamp: new Date().toISOString(),
-  })
   chatInput.value = ''
 }
 </script>
 
 <template>
   <div class="chatbox">
-    <!-- Header -->
     <div class="chatbox-header">
       <span class="chatbox-title">Chat</span>
       <span class="chatbox-channel" :class="`channel--${chat.activeChannel}`">
@@ -69,8 +54,7 @@ function send() {
       </span>
     </div>
 
-    <!-- Messaggi -->
-    <div class="chatbox-messages" ref="messagesEl">
+    <div ref="messagesEl" class="chatbox-messages">
       <div v-if="chat.visibleMessages.length === 0" class="chatbox-empty">
         Nessun messaggio ancora...
       </div>
@@ -89,7 +73,6 @@ function send() {
       </div>
     </div>
 
-    <!-- Input -->
     <div class="chatbox-input-wrap">
       <input
         v-model="chatInput"
@@ -103,7 +86,9 @@ function send() {
         class="chatbox-send"
         :disabled="!chat.canChat || !chatInput.trim()"
         @click="send"
-      >➤</button>
+      >
+        Invia
+      </button>
     </div>
   </div>
 </template>
@@ -120,7 +105,6 @@ function send() {
   overflow: hidden;
 }
 
-/* ---- HEADER ---- */
 .chatbox-header {
   display: flex;
   align-items: center;
@@ -129,6 +113,7 @@ function send() {
   border-bottom: 1px solid rgba(255,255,255,0.06);
   flex-shrink: 0;
 }
+
 .chatbox-title {
   font-family: 'Cinzel', serif;
   font-size: 0.68rem;
@@ -136,17 +121,18 @@ function send() {
   text-transform: uppercase;
   color: rgba(232,200,122,0.45);
 }
+
 .chatbox-channel {
   font-size: 0.68rem;
   padding: 0.1rem 0.5rem;
   border-radius: 10px;
   font-weight: 700;
 }
-.channel--global  { background: rgba(232,200,122,0.08); color: rgba(232,200,122,0.6); }
-.channel--wolves  { background: rgba(248,113,113,0.1);  color: #f87171; }
-.channel--dead    { background: rgba(148,163,184,0.1);  color: rgba(148,163,184,0.6); }
 
-/* ---- MESSAGGI ---- */
+.channel--global { background: rgba(232,200,122,0.08); color: rgba(232,200,122,0.6); }
+.channel--wolves { background: rgba(248,113,113,0.1); color: #f87171; }
+.channel--dead { background: rgba(148,163,184,0.1); color: rgba(148,163,184,0.6); }
+
 .chatbox-messages {
   flex: 1;
   overflow-y: auto;
@@ -156,6 +142,7 @@ function send() {
   gap: 0.45rem;
   min-height: 0;
 }
+
 .chatbox-empty {
   font-size: 0.78rem;
   color: rgba(232,224,213,0.2);
@@ -171,6 +158,7 @@ function send() {
   max-width: 85%;
   align-self: flex-start;
 }
+
 .chatbox-msg--me {
   align-self: flex-end;
 }
@@ -181,6 +169,7 @@ function send() {
   gap: 0.35rem;
   padding: 0 0.2rem;
 }
+
 .chatbox-msg--me .msg-meta {
   flex-direction: row-reverse;
 }
@@ -190,6 +179,7 @@ function send() {
   font-weight: 700;
   color: rgba(232,200,122,0.5);
 }
+
 .chatbox-msg--me .msg-sender {
   color: rgba(144,200,255,0.6);
 }
@@ -209,12 +199,12 @@ function send() {
   padding: 0.35rem 0.6rem;
   word-break: break-word;
 }
+
 .chatbox-msg--me .msg-bubble {
   background: rgba(100,180,255,0.08);
   border-color: rgba(100,180,255,0.1);
 }
 
-/* ---- INPUT ---- */
 .chatbox-input-wrap {
   display: flex;
   gap: 0.35rem;
@@ -222,6 +212,7 @@ function send() {
   border-top: 1px solid rgba(255,255,255,0.05);
   flex-shrink: 0;
 }
+
 .chatbox-input {
   flex: 1;
   background: rgba(255,255,255,0.04);
@@ -234,6 +225,7 @@ function send() {
   font-family: inherit;
   transition: border-color 0.2s;
 }
+
 .chatbox-input:focus { border-color: rgba(232,200,122,0.3); }
 .chatbox-input:disabled { opacity: 0.3; cursor: not-allowed; }
 .chatbox-input::placeholder { color: rgba(232,224,213,0.2); }
@@ -243,15 +235,16 @@ function send() {
   border: 1px solid rgba(232,200,122,0.2);
   border-radius: 8px;
   color: #e8c87a;
-  width: 32px;
+  min-width: 56px;
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 0.78rem;
   transition: all 0.2s;
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
 }
+
 .chatbox-send:hover:not(:disabled) { background: rgba(232,200,122,0.15); }
 .chatbox-send:disabled { opacity: 0.2; cursor: not-allowed; }
 </style>

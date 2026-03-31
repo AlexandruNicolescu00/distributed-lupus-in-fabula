@@ -34,6 +34,7 @@ class EventType(StrEnum):
     GAME_END = "game_end"
     GAME_STATE_SYNC = "game_state_sync"  # snapshot completo stato di gioco
     PLAYER_ACTION = "player_action"  # azione di un giocatore
+    CHAT_MESSAGE = "chat_message"
 
     # Sistema
     ERROR = "error"

@@ -52,6 +52,8 @@ export const useGameStore = defineStore('game', () => {
   const noEliminationReason = ref('')
   const voteMap         = ref({})       // { voterId: targetId }
   const gameEndPlayers  = ref([])       // lista finale con ruoli rivelati
+  const roomClosedAt    = ref(0)
+  const roomClosedMessage = ref('')
 
   const { emit, on } = useSocket()
 
@@ -242,6 +244,13 @@ export const useGameStore = defineStore('game', () => {
     emit('seer_action', { seer_id: currentPlayerId.value, target_id: targetId })
   }
 
+  function emitRoomClosed(roomCode = currentRoomCode.value) {
+    emit('room_closed', {
+      lobby_code: roomCode,
+      reason: "L'host ha chiuso la partita.",
+    })
+  }
+
   /** Registra i listener Socket.IO */
   function listenToGameEvents() {
     // --- game_state_sync ---
@@ -255,7 +264,14 @@ export const useGameStore = defineStore('game', () => {
         players.value.length || data.payload?.players?.length || 0,
         data.payload?.role_setup ?? pendingRoleSetup.value
       )
-      if (players.value.length > 0 && players.value.every((player) => !player.role)) {
+      if (data.payload?.players?.length) {
+        const normalizedPlayers = normalizePlayers(data.payload.players)
+        const rolesMissing = normalizedPlayers.every((player) => !player.role)
+        players.value = rolesMissing
+          ? assignLocalRoles(normalizedPlayers, pendingRoleSetup.value, currentRoomCode.value)
+          : normalizedPlayers
+        myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
+      } else if (players.value.length > 0 && players.value.every((player) => !player.role)) {
         players.value = assignLocalRoles(players.value, pendingRoleSetup.value, currentRoomCode.value)
         myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
       }
@@ -331,6 +347,11 @@ export const useGameStore = defineStore('game', () => {
       if (resumePhase) phase.value   = resumePhase
       if (timer_end)   timerEnd.value = timer_end
     })
+
+    on('room_closed', ({ payload = {} }) => {
+      roomClosedMessage.value = payload.reason ?? "L'host ha chiuso la partita."
+      roomClosedAt.value = Date.now()
+    })
   }
 
   function reset() {
@@ -350,6 +371,8 @@ export const useGameStore = defineStore('game', () => {
     noEliminationReason.value = ''
     voteMap.value             = {}
     gameEndPlayers.value      = []
+    roomClosedAt.value        = 0
+    roomClosedMessage.value   = ''
     error.value               = null
   }
 
@@ -380,11 +403,11 @@ export const useGameStore = defineStore('game', () => {
     phase, round, players, currentPlayerId, myRole, wolfCompanions,
     winner, timerEnd, isLoading, error, isPaused, pauseReason,
     seerResult, noElimination, noEliminationReason, voteMap,
-    gameEndPlayers,
+    gameEndPlayers, roomClosedAt, roomClosedMessage,
     alivePlayers, deadPlayers, me, isAlive, isWolf, isSeer, isVillager,
     secondsLeft, timerProgress, voteCount,
     normalizeRoleSetup, normalizePlayers, bootstrapFromLobby, loadState, handleStateSync,
-    vote, wolfVote, seerAction, listenToGameEvents, reset,
+    vote, wolfVote, seerAction, emitRoomClosed, listenToGameEvents, reset,
     PHASES, ROLES, WINNERS,
   }
 })

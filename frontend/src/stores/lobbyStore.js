@@ -247,6 +247,7 @@ export const useLobbyStore = defineStore('lobby', () => {
         applyRoleSetup(remoteRoleSetup)
       }
     })
+
   }
 
   /**
@@ -258,6 +259,8 @@ export const useLobbyStore = defineStore('lobby', () => {
     try {
       const code = 'WOLF-' + Math.floor(1000 + Math.random() * 9000)
       
+      sessionStorage.setItem('client_id', playerName)
+      sessionStorage.setItem('room_id', code)
       localStorage.setItem('client_id', playerName)
       localStorage.setItem('room_id', code)
 
@@ -287,6 +290,8 @@ export const useLobbyStore = defineStore('lobby', () => {
     isLoading.value = true
     error.value = null
     try {
+      sessionStorage.setItem('client_id', playerName)
+      sessionStorage.setItem('room_id', code)
       localStorage.setItem('client_id', playerName)
       localStorage.setItem('room_id', code)
 
