@@ -27,7 +27,7 @@ from core.metrics import WS_MESSAGES_RECEIVED_TOTAL, WS_MESSAGES_SENT_TOTAL
 from core import state_store as rs
 from core.state_store import GameStateStore
 from models.events import GameEndedPayload, PlayerKilledPayload, SeerResultPayload
-from models.game import GameState, Phase, Player
+from models.game import GameState, Phase, Player, Role
 from pubsub.manager import PubSubManager
 from services.game_logic import (
     advance_phase,
@@ -106,6 +106,8 @@ async def _sync_room_state(room_id: str) -> None:
             "winner": state.get("winner"),
             "timer_end": state.get("timer_end"),
             "paused": state.get("paused", False),
+            "wolf_count": state.get("wolf_count"),
+            "seer_count": state.get("seer_count"),
             "players": [
                 {
                     "player_id": p.player_id,
@@ -494,13 +496,34 @@ async def _handle_seer_action(sid: str, room_id: str, client_id: str, payload: d
     )
 
 
-async def _handle_game_start(room_id: str) -> None:
+async def _handle_game_start(room_id: str, payload: dict[str, Any]) -> None:
     player_ids = connection_manager.get_client_ids(room_id)
-    if len(player_ids) < 4:
-        raise ValueError("Need at least 4 connected players to start the game")
+    if len(player_ids) < 5:
+        raise ValueError("Need at least 5 connected players to start the game")
 
     redis = _domain_redis()
-    assignment = await assign_roles(redis, room_id, player_ids)
+    wolf_count = payload.get("wolf_count")
+    seer_count = payload.get("seer_count")
+    if wolf_count is not None:
+        wolf_count = int(wolf_count)
+    if seer_count is not None:
+        seer_count = int(seer_count)
+
+    assignment = await assign_roles(
+        redis,
+        room_id,
+        player_ids,
+        wolf_count=wolf_count,
+        seer_count=seer_count,
+    )
+    resolved_wolf_count = sum(1 for role in assignment.values() if role == Role.WOLF)
+    resolved_seer_count = sum(1 for role in assignment.values() if role == Role.SEER)
+    await rs.patch_game_state(
+        redis,
+        room_id,
+        wolf_count=resolved_wolf_count,
+        seer_count=resolved_seer_count,
+    )
     players = await rs.get_all_players(redis, room_id)
     await _emit_role_assignments(room_id, build_role_payloads(assignment, players))
 
@@ -573,7 +596,7 @@ async def catch_all(event: str, sid: str, data: dict):
             await _handle_seer_action(sid, room_id, client_id, payload)
             return
         if event in (EventType.GAME_START, "lobby:start_game"):
-            await _handle_game_start(room_id)
+            await _handle_game_start(room_id, payload)
             return
         if event in ("phase:advance", "game:advance_phase"):
             await _handle_phase_advance(room_id)

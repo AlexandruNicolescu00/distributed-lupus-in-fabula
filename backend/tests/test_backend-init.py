@@ -101,6 +101,12 @@ class TestGameState:
         gs.phase = Phase.ENDED
         assert gs.is_over()
 
+    def test_role_count_defaults(self):
+        from models.game import GameState
+        gs = GameState(game_id="g3")
+        assert gs.wolf_count is None
+        assert gs.seer_count is None
+
 
 # ---------------------------------------------------------------------------
 # F0-2 — models/events.py

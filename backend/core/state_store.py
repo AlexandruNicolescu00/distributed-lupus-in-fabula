@@ -87,6 +87,8 @@ async def set_game_state(r: aioredis.Redis, game_id: str, state: GameState) -> N
         "paused": state.paused,
         "winner": state.winner.value if state.winner else None,
         "timer_end": state.timer_end,
+        "wolf_count": state.wolf_count,
+        "seer_count": state.seer_count,
     }
     await r.setex(key_state(game_id), STATE_TTL, json.dumps(data))
 

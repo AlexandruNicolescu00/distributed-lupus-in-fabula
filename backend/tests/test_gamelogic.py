@@ -191,7 +191,7 @@ class TestAssignRoles:
 
     @pytest.mark.asyncio
     async def test_assign_roles_raises_on_too_few_players(self, r):
-        with pytest.raises(ValueError, match="at least 4"):
+        with pytest.raises(ValueError, match="at least 5"):
             await assign_roles(r, GAME_ID, ["p1", "p2", "p3"])
 
     @pytest.mark.asyncio
@@ -205,6 +205,27 @@ class TestAssignRoles:
         a2 = await assign_roles(r, "g-B", ids)
         assert set(a1.values()) == {Role.WOLF, Role.SEER, Role.VILLAGER}
         assert set(a2.values()) == {Role.WOLF, Role.SEER, Role.VILLAGER}
+
+    @pytest.mark.asyncio
+    async def test_assign_roles_uses_custom_role_counts(self, r, game_with_players):
+        assignment = await assign_roles(
+            r,
+            GAME_ID,
+            game_with_players,
+            wolf_count=2,
+            seer_count=2,
+        )
+        wolves = [p for p, role in assignment.items() if role == Role.WOLF]
+        seers = [p for p, role in assignment.items() if role == Role.SEER]
+        villagers = [p for p, role in assignment.items() if role == Role.VILLAGER]
+        assert len(wolves) == 2
+        assert len(seers) == 2
+        assert len(villagers) == 2
+
+    @pytest.mark.asyncio
+    async def test_assign_roles_rejects_invalid_custom_counts(self, r, game_with_players):
+        with pytest.raises(ValueError, match="at least 1 villager"):
+            await assign_roles(r, GAME_ID, game_with_players, wolf_count=4, seer_count=2)
 
     @pytest.mark.asyncio
     async def test_build_role_payloads_wolf_companions(self, r, game_with_players):

@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 def _wolf_count(player_count: int) -> int:
     """
     Returns the number of wolves to assign based on player count.
-        4–6  players → 1 wolf
+        5–6  players → 1 wolf
         7–9  players → 2 wolves
         10+  players → 3 wolves
     """
@@ -50,10 +50,27 @@ def _wolf_count(player_count: int) -> int:
     return 1
 
 
+def _default_role_counts(player_count: int) -> tuple[int, int]:
+    return _wolf_count(player_count), 1
+
+
+def _validate_role_counts(player_count: int, wolf_count: int, seer_count: int) -> None:
+    if player_count < 5:
+        raise ValueError(f"Need at least 5 players, got {player_count}")
+    if wolf_count < 1:
+        raise ValueError("wolf_count must be at least 1")
+    if seer_count < 0:
+        raise ValueError("seer_count cannot be negative")
+    if wolf_count + seer_count >= player_count:
+        raise ValueError("wolf_count + seer_count must leave at least 1 villager")
+
+
 async def assign_roles(
     r: aioredis.Redis,
     game_id: str,
     player_ids: list[str],
+    wolf_count: int | None = None,
+    seer_count: int | None = None,
 ) -> dict[str, Role]:
     """
     Randomly assigns roles to all players and persists them on Redis.
@@ -63,19 +80,22 @@ async def assign_roles(
 
     Wolves also receive the list of wolf_companions in their payload.
     """
-    if len(player_ids) < 4:
-        raise ValueError(f"Need at least 4 players, got {len(player_ids)}")
+    if wolf_count is None or seer_count is None:
+        default_wolves, default_seers = _default_role_counts(len(player_ids))
+        wolf_count = default_wolves if wolf_count is None else wolf_count
+        seer_count = default_seers if seer_count is None else seer_count
 
-    n_wolves = _wolf_count(len(player_ids))
+    _validate_role_counts(len(player_ids), wolf_count, seer_count)
+
     shuffled = player_ids[:]
     random.shuffle(shuffled)
 
-    # Assign: first n_wolves → WOLF, next 1 → SEER, rest → VILLAGER
+    # Assign: first wolves → WOLF, next seers → SEER, rest → VILLAGER
     assignment: dict[str, Role] = {}
     for i, pid in enumerate(shuffled):
-        if i < n_wolves:
+        if i < wolf_count:
             assignment[pid] = Role.WOLF
-        elif i == n_wolves:
+        elif i < wolf_count + seer_count:
             assignment[pid] = Role.SEER
         else:
             assignment[pid] = Role.VILLAGER
@@ -91,8 +111,8 @@ async def assign_roles(
 
     wolf_ids = [pid for pid, role in assignment.items() if role == Role.WOLF]
     logger.info(
-        "Roles assigned | game=%s players=%d wolves=%d",
-        game_id, len(player_ids), n_wolves,
+        "Roles assigned | game=%s players=%d wolves=%d seers=%d",
+        game_id, len(player_ids), wolf_count, seer_count,
     )
     return assignment
 

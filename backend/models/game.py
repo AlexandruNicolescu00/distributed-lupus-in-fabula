@@ -106,6 +106,8 @@ class GameState:
     timer_end: Optional[float]           = None
     paused:    bool                      = False
     winner:    Optional[Winner]          = None
+    wolf_count: Optional[int]            = None
+    seer_count: Optional[int]            = None
 
     # ------------------------------------------------------------------
     # Utility helpers
