@@ -92,7 +92,8 @@ class GameState:
     Attributes:
         game_id:    unique identifier of the game (UUID).
         phase:      current phase of the game loop.
-        round:      current round number (starts at 1 on the first night).
+        round:      current round number. The game starts at round 0 during the
+                    opening night, then moves to round 1 on the first day.
         players:    dictionary player_id → Player.
         timer_end:  UNIX timestamp (float) of phase timer expiration.
                     None in LOBBY and ENDED.

@@ -26,7 +26,17 @@ from core.messages import EventType, RedisEvent, WSMessage
 from core.metrics import WS_MESSAGES_RECEIVED_TOTAL, WS_MESSAGES_SENT_TOTAL
 from core import state_store as rs
 from core.state_store import GameStateStore
-from models.events import GameEndedPayload, PlayerKilledPayload, SeerResultPayload
+from models.events import (
+    ErrorPayload,
+    GameEndedPayload,
+    GameStateSyncPayload,
+    PlayerJoinedPayload,
+    PlayerKilledPayload,
+    PlayerLeftPayload,
+    SeerActionAcceptedPayload,
+    SeerResultPayload,
+    WolfVoteAcceptedPayload,
+)
 from models.game import GameState, Phase, Player, Role
 from pubsub.manager import PubSubManager
 from services.game_logic import (
@@ -146,6 +156,16 @@ def _schedule_phase_timer(room_id: str, timer_end: float | None) -> None:
     phase_tasks[room_id] = asyncio.create_task(_runner(), name=f"phase-timer:{room_id}")
 
 
+def _player_payload(player: Player, *, reveal_role: bool = True) -> dict[str, object]:
+    return {
+        "player_id": player.player_id,
+        "username": player.username,
+        "alive": player.alive,
+        "connected": player.connected,
+        "role": player.role.value if reveal_role and player.role else None,
+    }
+
+
 # ── Lifespan FastAPI ──────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -235,7 +255,7 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
             event_type=EventType.GAME_STATE_SYNC,
             room_id=room_id,
             sender_id=INSTANCE_ID,
-            payload={"state": current_state, "players": list(players)},
+            payload=asdict(GameStateSyncPayload(state=current_state, players=list(players))),
         )
         ws_msg = WSMessage.from_redis_event(sync_event)
         await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), to=sid)
@@ -263,7 +283,13 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
         event_type=EventType.PLAYER_JOINED,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"client_id": client_id, "players": list(players)},
+        payload=asdict(
+            PlayerJoinedPayload(
+                client_id=client_id,
+                player=_player_payload(player) if player is not None else None,
+                players=list(players),
+            )
+        ),
     )
     ws_msg = WSMessage.from_redis_event(join_event)
     # Emetti nella room escludendo il nuovo arrivato (skip_sid)
@@ -288,12 +314,19 @@ async def disconnect(sid: str):
 
     remaining = await state_store.remove_player(room_id, client_id or sid)
     await _sync_room_state(room_id)
+    leaving_player = await rs.get_player(_domain_redis(), room_id, client_id or sid)
 
     leave_event = RedisEvent(
         event_type=EventType.PLAYER_LEFT,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"client_id": client_id, "players": list(remaining)},
+        payload=asdict(
+            PlayerLeftPayload(
+                client_id=client_id or sid,
+                player=_player_payload(leaving_player, reveal_role=False) if leaving_player is not None else None,
+                players=list(remaining),
+            )
+        ),
     )
     ws_msg = WSMessage.from_redis_event(leave_event)
 
@@ -307,16 +340,12 @@ async def disconnect(sid: str):
 
 
 async def _emit_error(sid: str, room_id: str, message: str) -> None:
-    await sio.emit(
+    await _emit_authoritative_event(
         EventType.ERROR,
-        {
-            "event_type": EventType.ERROR,
-            "room_id": room_id,
-            "timestamp": None,
-            "payload": {"message": message},
-            "instance_id": INSTANCE_ID,
-        },
+        room_id,
+        ErrorPayload(message=message),
         to=sid,
+        publish=False,
     )
 
 
@@ -389,6 +418,7 @@ async def _emit_night_resolution(room_id: str, result: dict[str, Any]) -> None:
                 PlayerKilledPayload(
                     player_id=victim.player_id,
                     username=victim.username,
+                    player=_player_payload(victim, reveal_role=False),
                 ),
             )
 
@@ -475,7 +505,7 @@ async def _handle_wolf_vote(sid: str, room_id: str, client_id: str, payload: dic
     await _emit_authoritative_event(
         EventType.WOLF_VOTE,
         room_id,
-        {"target_id": target_id, "accepted": True},
+        WolfVoteAcceptedPayload(target_id=target_id),
         to=sid,
         publish=False,
     )
@@ -490,7 +520,7 @@ async def _handle_seer_action(sid: str, room_id: str, client_id: str, payload: d
     await _emit_authoritative_event(
         EventType.SEER_ACTION,
         room_id,
-        {"target_id": target_id, "accepted": True},
+        SeerActionAcceptedPayload(target_id=target_id),
         to=sid,
         publish=False,
     )
@@ -527,12 +557,13 @@ async def _handle_game_start(room_id: str, payload: dict[str, Any]) -> None:
     players = await rs.get_all_players(redis, room_id)
     await _emit_role_assignments(room_id, build_role_payloads(assignment, players))
 
-    timer_end = await set_phase(redis, room_id, Phase.DAY, round_number=1)
+    # The game opens with the first night; round 1 begins when day starts.
+    timer_end = await set_phase(redis, room_id, Phase.NIGHT, round_number=0)
     await _sync_room_state(room_id)
     await _emit_authoritative_event(
         EventType.PHASE_CHANGED,
         room_id,
-        build_phase_changed_payload(Phase.DAY, 1, timer_end),
+        build_phase_changed_payload(Phase.NIGHT, 0, timer_end),
     )
     _schedule_phase_timer(room_id, timer_end)
 

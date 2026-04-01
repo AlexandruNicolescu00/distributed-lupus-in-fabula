@@ -14,18 +14,25 @@ from enum import StrEnum
 from typing import Any
 
 from models.events import (
+    ActionAcceptedPayload,
     CastVoteEvent,
+    ErrorPayload,
     GameEndedPayload,
     GamePausedPayload,
     GameResumedPayload,
+    GameStateSyncPayload,
     NoEliminationPayload,
     PhaseChangedPayload,
     PlayerEliminatedPayload,
+    PlayerJoinedPayload,
     PlayerKilledPayload,
+    PlayerLeftPayload,
     RoleAssignedPayload,
+    SeerActionAcceptedPayload,
     SeerActionEvent,
     SeerResultPayload,
     VoteUpdatePayload,
+    WolfVoteAcceptedPayload,
     WolfVoteEvent,
 )
 
@@ -68,6 +75,9 @@ class EventType(StrEnum):
 
 
 SERVER_EVENT_PAYLOAD_TYPES: dict[EventType, type[Any]] = {
+    EventType.GAME_STATE_SYNC: GameStateSyncPayload,
+    EventType.PLAYER_JOINED: PlayerJoinedPayload,
+    EventType.PLAYER_LEFT: PlayerLeftPayload,
     EventType.VOTE_UPDATE: VoteUpdatePayload,
     EventType.PLAYER_ELIMINATED: PlayerEliminatedPayload,
     EventType.PLAYER_KILLED: PlayerKilledPayload,
@@ -78,6 +88,9 @@ SERVER_EVENT_PAYLOAD_TYPES: dict[EventType, type[Any]] = {
     EventType.PHASE_CHANGED: PhaseChangedPayload,
     EventType.ROLE_ASSIGNED: RoleAssignedPayload,
     EventType.NO_ELIMINATION: NoEliminationPayload,
+    EventType.WOLF_VOTE: WolfVoteAcceptedPayload,
+    EventType.SEER_ACTION: SeerActionAcceptedPayload,
+    EventType.ERROR: ErrorPayload,
 }
 
 CLIENT_EVENT_PAYLOAD_TYPES: dict[EventType, type[Any]] = {

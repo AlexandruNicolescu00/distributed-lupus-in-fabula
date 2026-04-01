@@ -34,6 +34,16 @@ from models.events import (
 logger = logging.getLogger(__name__)
 
 
+def _player_payload(player: Player, *, reveal_role: bool = True) -> dict[str, object]:
+    return {
+        "player_id": player.player_id,
+        "username": player.username,
+        "alive": player.alive,
+        "connected": player.connected,
+        "role": player.role.value if reveal_role and player.role else None,
+    }
+
+
 # ── F1-2 · assign_roles() ─────────────────────────────────────────────────────
 
 def _wolf_count(player_count: int) -> int:
@@ -378,6 +388,7 @@ async def eliminate_player(
         username=player.username,
         role=player.role.value if player.role else "",
         round=round_number,
+        player=_player_payload(player),
     )
 
 

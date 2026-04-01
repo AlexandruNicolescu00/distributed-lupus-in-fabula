@@ -152,6 +152,24 @@ class TestEvents:
             d = to_dict(NoEliminationPayload(reason=reason))
             assert d["reason"] == reason
 
+    def test_player_joined_defaults(self):
+        from models.events import PlayerJoinedPayload, to_dict
+        d = to_dict(PlayerJoinedPayload(client_id="p1"))
+        assert d["client_id"] == "p1"
+        assert d["players"] == []
+
+    def test_action_ack_payload(self):
+        from models.events import WolfVoteAcceptedPayload, to_dict
+        d = to_dict(WolfVoteAcceptedPayload(target_id="p2"))
+        assert d["event"] == "wolf_vote"
+        assert d["accepted"] is True
+
+    def test_error_payload(self):
+        from models.events import ErrorPayload, to_dict
+        d = to_dict(ErrorPayload(message="boom"))
+        assert d["event"] == "error"
+        assert d["message"] == "boom"
+
 
 # ---------------------------------------------------------------------------
 # F0-3a — core/config.py
