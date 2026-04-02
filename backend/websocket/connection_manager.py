@@ -88,6 +88,19 @@ class ConnectionManager:
             if self._clients.get(sid) == client_id
         )
 
+    def get_sid(self, room_id: str, client_id: str) -> str | None:
+        for sid in self._rooms.get(room_id, set()):
+            if self._clients.get(sid) == client_id:
+                return sid
+        return None
+
+    def get_client_ids(self, room_id: str) -> list[str]:
+        return [
+            self._clients[sid]
+            for sid in self._rooms.get(room_id, set())
+            if sid in self._clients
+        ]
+
     def client_count(self, room_id: str | None = None) -> int:
         if room_id:
             return len(self._rooms.get(room_id, set()))

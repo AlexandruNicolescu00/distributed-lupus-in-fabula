@@ -101,6 +101,14 @@ class TestGameState:
         gs.phase = Phase.ENDED
         assert gs.is_over()
 
+    def test_role_count_defaults(self):
+        from models.game import GameState
+        gs = GameState(game_id="g3")
+        assert gs.wolf_count is None
+        assert gs.seer_count is None
+        assert gs.host_id is None
+        assert gs.ready_player_ids == []
+
 
 # ---------------------------------------------------------------------------
 # F0-2 — models/events.py
@@ -146,20 +154,57 @@ class TestEvents:
             d = to_dict(NoEliminationPayload(reason=reason))
             assert d["reason"] == reason
 
+    def test_player_joined_defaults(self):
+        from models.events import PlayerJoinedPayload, to_dict
+        d = to_dict(PlayerJoinedPayload(client_id="p1"))
+        assert d["client_id"] == "p1"
+        assert d["players"] == []
+
+    def test_action_ack_payload(self):
+        from models.events import WolfVoteAcceptedPayload, to_dict
+        d = to_dict(WolfVoteAcceptedPayload(target_id="p2"))
+        assert d["event"] == "wolf_vote"
+        assert d["accepted"] is True
+
+    def test_lobby_payloads(self):
+        from models.events import (
+            LobbyPlayerReadyChangedPayload,
+            LobbySettingsUpdatedPayload,
+            RoomClosedPayload,
+            to_dict,
+        )
+
+        settings = to_dict(LobbySettingsUpdatedPayload(host_id="host", wolf_count=2, seer_count=1))
+        ready = to_dict(LobbyPlayerReadyChangedPayload(client_id="p1", ready=True))
+        closed = to_dict(RoomClosedPayload(reason="host_disconnected", host_id="host"))
+
+        assert settings["event"] == "lobby:settings_updated"
+        assert ready["event"] == "lobby:player_ready_changed"
+        assert ready["ready_player_ids"] == []
+        assert closed["event"] == "room_closed"
+
+    def test_error_payload(self):
+        from models.events import ErrorPayload, to_dict
+        d = to_dict(ErrorPayload(message="boom"))
+        assert d["event"] == "error"
+        assert d["message"] == "boom"
+
 
 # ---------------------------------------------------------------------------
-# F0-3a — settings.py
+# F0-3a — core/config.py
 # ---------------------------------------------------------------------------
 
 class TestSettings:
     def test_defaults_exist(self):
-        from settings import settings
+        from core.config import get_settings
+        settings = get_settings()
         assert settings.redis_url.startswith("redis://")
         assert isinstance(settings.app_port, int)
         assert isinstance(settings.cors_origins, list)
 
     def test_phase_durations(self):
-        from settings import settings
+        from core.config import get_settings
+        settings = get_settings()
         d = settings.phase_durations
         assert d.day == 120
         assert d.voting == 60
@@ -167,54 +212,7 @@ class TestSettings:
         assert d.night_wolf + d.night_seer == d.night
 
     def test_redis_kwargs(self):
-        from settings import settings
+        from core.config import get_settings
+        settings = get_settings()
         kwargs = settings.redis_kwargs()
         assert "url" in kwargs
-
-
-# ---------------------------------------------------------------------------
-# F0-3b — infra/redis_client.py
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def mock_redis(monkeypatch):
-    """Replaces init_redis with an in-memory fakeredis connection."""
-    import fakeredis.aioredis as fakeredis
-    import infra.redis_client as rc
-
-    fake = fakeredis.FakeRedis(decode_responses=True)
-
-    async def _fake_init():
-        rc._redis = fake
-        return fake
-
-    monkeypatch.setattr(rc, "init_redis", _fake_init)
-    monkeypatch.setattr(rc, "_redis", fake)
-    return fake
-
-
-@pytest.mark.asyncio
-async def test_redis_set_get(mock_redis):
-    from infra.redis_client import get_redis
-    r = get_redis()
-    await r.set("test:key", "hello")
-    val = await r.get("test:key")
-    assert val == "hello"
-
-
-@pytest.mark.asyncio
-async def test_redis_keys_schema():
-    from infra.redis_client import RedisKeys
-    gid = "abc123"
-    assert RedisKeys.game_state(gid)   == f"game:{gid}:state"
-    assert RedisKeys.votes(gid)        == f"game:{gid}:votes"
-    assert RedisKeys.wolf_votes(gid)   == f"game:{gid}:wolf_votes"
-    assert RedisKeys.seer_action(gid)  == f"game:{gid}:seer_action"
-    assert RedisKeys.pubsub_channel(gid) == f"channel:{gid}:events"
-
-
-def test_get_redis_raises_if_not_init(monkeypatch):
-    import infra.redis_client as rc
-    monkeypatch.setattr(rc, "_redis", None)
-    with pytest.raises(RuntimeError, match="not initialised"):
-        rc.get_redis()

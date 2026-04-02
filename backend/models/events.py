@@ -56,6 +56,75 @@ class VoteUpdatePayload:
 
 
 @dataclass
+class GameStateSyncPayload:
+    """
+    Event: ``game_state_sync``
+    Direction: unicast to the connecting client.
+    Purpose: provides the latest room/game snapshot after connect or reconnect.
+    """
+    event: str = "game_state_sync"
+    state: dict = None  # type: ignore[assignment]
+    players: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.state is None:
+            self.state = {}
+        if self.players is None:
+            self.players = []
+
+
+@dataclass
+class PlayerPresencePayload:
+    """
+    Shared payload shape for ``player_joined`` and ``player_left``.
+    """
+    client_id: str = ""
+    player: Optional[dict] = None
+    players: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.players is None:
+            self.players = []
+
+
+@dataclass
+class PlayerJoinedPayload(PlayerPresencePayload):
+    event: str = "player_joined"
+
+
+@dataclass
+class PlayerLeftPayload(PlayerPresencePayload):
+    event: str = "player_left"
+
+
+@dataclass
+class LobbySettingsUpdatedPayload:
+    event: str = "lobby:settings_updated"
+    host_id: str = ""
+    wolf_count: Optional[int] = None
+    seer_count: Optional[int] = None
+
+
+@dataclass
+class LobbyPlayerReadyChangedPayload:
+    event: str = "lobby:player_ready_changed"
+    client_id: str = ""
+    ready: bool = False
+    ready_player_ids: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.ready_player_ids is None:
+            self.ready_player_ids = []
+
+
+@dataclass
+class RoomClosedPayload:
+    event: str = "room_closed"
+    reason: str = ""
+    host_id: str = ""
+
+
+@dataclass
 class PlayerEliminatedPayload:
     """
     Event: ``player_eliminated``
@@ -73,6 +142,7 @@ class PlayerEliminatedPayload:
     username: str   = ""
     role: str       = ""      # Role.value
     round: int      = 0
+    player: Optional[dict] = None
 
 
 @dataclass
@@ -89,6 +159,7 @@ class PlayerKilledPayload:
     event: str      = "player_killed"
     player_id: str  = ""
     username: str   = ""
+    player: Optional[dict] = None
 
 
 @dataclass
@@ -107,6 +178,25 @@ class SeerResultPayload:
     target_id: str      = ""
     target_name: str    = ""
     role: str           = ""   # Role.value
+
+
+@dataclass
+class ActionAcceptedPayload:
+    """
+    Shared ack payload for accepted player actions.
+    """
+    target_id: str = ""
+    accepted: bool = True
+
+
+@dataclass
+class WolfVoteAcceptedPayload(ActionAcceptedPayload):
+    event: str = "wolf_vote"
+
+
+@dataclass
+class SeerActionAcceptedPayload(ActionAcceptedPayload):
+    event: str = "seer_action"
 
 
 @dataclass
@@ -218,6 +308,16 @@ class NoEliminationPayload:
     reason: str = ""
 
 
+@dataclass
+class ErrorPayload:
+    """
+    Event: ``error``
+    Direction: unicast to the client whose action failed.
+    """
+    event: str = "error"
+    message: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Events received from client → server
 # ---------------------------------------------------------------------------
@@ -250,3 +350,22 @@ class SeerActionEvent:
     """
     seer_id:   str = ""
     target_id: str = ""
+
+
+@dataclass
+class LobbyUpdateSettingsEvent:
+    """
+    Event: ``lobby:update_settings``  (client → server)
+    Purpose: updates pre-game lobby settings controlled by the host.
+    """
+    wolf_count: Optional[int] = None
+    seer_count: Optional[int] = None
+
+
+@dataclass
+class LobbyPlayerReadyEvent:
+    """
+    Event: ``lobby:player_ready``  (client → server)
+    Purpose: toggles the ready state of a connected lobby player.
+    """
+    ready: bool = True

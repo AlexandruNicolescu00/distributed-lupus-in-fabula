@@ -1,18 +1,45 @@
 # Questo file definisce il formato dei messaggi scambiati su Redis Pub/Sub
 # e tra backend e client WebSocket.
 #
-# Una volta ricevuta la specifica dal Membro 1, aggiornare:
-#   - EventType: aggiungere/rinominare i tipi di evento di gioco
-#   - GameEvent.payload: adattare i campi al protocollo concordato
-#
-# Il formato attuale è un placeholder ragionevole.
+# Gli eventi gameplay sono allineati alle dataclass definite in
+# `backend/models/events.py`. Manteniamo anche alcuni eventi di sistema/stanza
+# già usati nel backend corrente.
 
 from __future__ import annotations
 
 import time
 import uuid
+from dataclasses import asdict, is_dataclass
 from enum import StrEnum
 from typing import Any
+
+from models.events import (
+    ActionAcceptedPayload,
+    CastVoteEvent,
+    ErrorPayload,
+    GameEndedPayload,
+    GamePausedPayload,
+    GameResumedPayload,
+    GameStateSyncPayload,
+    LobbyPlayerReadyChangedPayload,
+    LobbyPlayerReadyEvent,
+    LobbySettingsUpdatedPayload,
+    LobbyUpdateSettingsEvent,
+    NoEliminationPayload,
+    PhaseChangedPayload,
+    PlayerEliminatedPayload,
+    PlayerJoinedPayload,
+    PlayerKilledPayload,
+    PlayerLeftPayload,
+    RoleAssignedPayload,
+    RoomClosedPayload,
+    SeerActionAcceptedPayload,
+    SeerActionEvent,
+    SeerResultPayload,
+    VoteUpdatePayload,
+    WolfVoteAcceptedPayload,
+    WolfVoteEvent,
+)
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +55,10 @@ class EventType(StrEnum):
     ROLE_SETUP_UPDATED = "role_setup_updated"
     ROOM_CREATED = "room_created"
     ROOM_CLOSED = "room_closed"
+    LOBBY_UPDATE_SETTINGS = "lobby:update_settings"
+    LOBBY_SETTINGS_UPDATED = "lobby:settings_updated"
+    LOBBY_PLAYER_READY = "lobby:player_ready"
+    LOBBY_PLAYER_READY_CHANGED = "lobby:player_ready_changed"
 
     # Gameplay (placeholder — aggiornare con Membro 1)
     GAME_START = "start_game"
@@ -39,6 +70,37 @@ class EventType(StrEnum):
     # Sistema
     ERROR = "error"
     PONG = "pong"  # risposta al ping del client
+
+
+SERVER_EVENT_PAYLOAD_TYPES: dict[EventType, type[Any]] = {
+    EventType.GAME_STATE_SYNC: GameStateSyncPayload,
+    EventType.PLAYER_JOINED: PlayerJoinedPayload,
+    EventType.PLAYER_LEFT: PlayerLeftPayload,
+    EventType.ROOM_CLOSED: RoomClosedPayload,
+    EventType.LOBBY_SETTINGS_UPDATED: LobbySettingsUpdatedPayload,
+    EventType.LOBBY_PLAYER_READY_CHANGED: LobbyPlayerReadyChangedPayload,
+    EventType.VOTE_UPDATE: VoteUpdatePayload,
+    EventType.PLAYER_ELIMINATED: PlayerEliminatedPayload,
+    EventType.PLAYER_KILLED: PlayerKilledPayload,
+    EventType.SEER_RESULT: SeerResultPayload,
+    EventType.GAME_ENDED: GameEndedPayload,
+    EventType.GAME_PAUSED: GamePausedPayload,
+    EventType.GAME_RESUMED: GameResumedPayload,
+    EventType.PHASE_CHANGED: PhaseChangedPayload,
+    EventType.ROLE_ASSIGNED: RoleAssignedPayload,
+    EventType.NO_ELIMINATION: NoEliminationPayload,
+    EventType.WOLF_VOTE: WolfVoteAcceptedPayload,
+    EventType.SEER_ACTION: SeerActionAcceptedPayload,
+    EventType.ERROR: ErrorPayload,
+}
+
+CLIENT_EVENT_PAYLOAD_TYPES: dict[EventType, type[Any]] = {
+    EventType.CAST_VOTE: CastVoteEvent,
+    EventType.WOLF_VOTE: WolfVoteEvent,
+    EventType.SEER_ACTION: SeerActionEvent,
+    EventType.LOBBY_UPDATE_SETTINGS: LobbyUpdateSettingsEvent,
+    EventType.LOBBY_PLAYER_READY: LobbyPlayerReadyEvent,
+}
 
 
 # ── Messaggio pubblicato su Redis Pub/Sub ─────────────────────────────────────
@@ -69,6 +131,29 @@ class RedisEvent(BaseModel):
     def channel(self, prefix: str) -> str:
         """Restituisce il nome del canale Redis per questo evento."""
         return f"{prefix}:{self.room_id}"
+
+    @classmethod
+    def from_payload(
+        cls,
+        *,
+        event_type: EventType,
+        room_id: str,
+        sender_id: str,
+        payload: Any,
+    ) -> "RedisEvent":
+        """Crea un RedisEvent accettando sia dict sia dataclass evento/payload."""
+        if is_dataclass(payload):
+            payload = asdict(payload)
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            raise TypeError("payload must be a dict or dataclass instance")
+        return cls(
+            event_type=event_type,
+            room_id=room_id,
+            sender_id=sender_id,
+            payload=payload,
+        )
 
 
 # ── Messaggio inviato al client WebSocket ─────────────────────────────────────
