@@ -37,6 +37,7 @@ from services.lobby_logic import (
     mark_player_disconnected,
     sync_room_state as sync_lobby_room_state,
 )
+from services.lobby_runtime import LobbyRuntime
 from websocket.connection_manager import ConnectionManager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -62,6 +63,7 @@ pubsub_manager     = PubSubManager(sio)
 state_store        = GameStateStore()
 phase_tasks: dict[str, asyncio.Task] = {}
 game_runtime: GameRuntime | None = None
+lobby_runtime: LobbyRuntime | None = None
 
 
 def _domain_redis():
@@ -234,6 +236,9 @@ async def disconnect(sid: str):
     await sio.emit(EventType.PLAYER_LEFT, ws_msg.model_dump(), room=room_id)
     await pubsub_manager.publish(leave_event)
 
+    if lobby_runtime is not None:
+        await lobby_runtime.handle_disconnect(room_id, client_id or sid)
+
     if connection_manager.client_count(room_id) == 0:
         await pubsub_manager.unsubscribe_room(room_id)
         logger.info("Stanza vuota, unsubscribed da Redis | room=%s", room_id)
@@ -285,6 +290,12 @@ game_runtime = GameRuntime(
     sync_room_state=lambda room_id: sync_lobby_room_state(_domain_redis(), state_store, room_id),
     schedule_phase_timer=_schedule_phase_timer,
     cancel_phase_timer=_cancel_phase_timer,
+)
+
+lobby_runtime = LobbyRuntime(
+    get_redis=_domain_redis,
+    emit_authoritative_event=_emit_authoritative_event,
+    sync_room_state=lambda room_id: sync_lobby_room_state(_domain_redis(), state_store, room_id),
 )
 
 
@@ -342,8 +353,19 @@ async def catch_all(event: str, sid: str, data: dict):
         if event == EventType.SEER_ACTION:
             await game_runtime.handle_seer_action(sid, room_id, client_id, payload)
             return
+        if event == EventType.LOBBY_UPDATE_SETTINGS:
+            await lobby_runtime.handle_update_settings(room_id, client_id, payload)
+            return
+        if event == EventType.LOBBY_PLAYER_READY:
+            await lobby_runtime.handle_player_ready(room_id, client_id, payload)
+            return
         if event in (EventType.GAME_START, "lobby:start_game"):
-            await game_runtime.handle_game_start(room_id, payload)
+            await lobby_runtime.validate_can_start_game(
+                room_id,
+                client_id,
+                connection_manager.get_client_ids(room_id),
+            )
+            await game_runtime.handle_game_start(room_id)
             return
         if event in ("phase:advance", "game:advance_phase"):
             await game_runtime.handle_phase_advance(room_id)

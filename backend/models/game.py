@@ -98,7 +98,7 @@ class GameState:
         timer_end:  UNIX timestamp (float) of phase timer expiration.
                     None in LOBBY and ENDED.
         paused:     True if the game is paused (e.g. all wolves disconnected).
-        winner:     winner of the game; None until the game is finished.
+    winner:     winner of the game; None until the game is finished.
     """
     game_id:   str
     phase:     Phase                     = Phase.LOBBY
@@ -109,6 +109,8 @@ class GameState:
     winner:    Optional[Winner]          = None
     wolf_count: Optional[int]            = None
     seer_count: Optional[int]            = None
+    host_id: Optional[str]               = None
+    ready_player_ids: list[str]          = field(default_factory=list)
 
     # ------------------------------------------------------------------
     # Utility helpers

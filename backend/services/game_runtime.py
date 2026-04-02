@@ -207,18 +207,15 @@ class GameRuntime:
             publish=False,
         )
 
-    async def handle_game_start(self, room_id: str, payload: dict[str, Any]) -> None:
+    async def handle_game_start(self, room_id: str) -> None:
         player_ids = self._connection_manager.get_client_ids(room_id)
         if len(player_ids) < 5:
             raise ValueError("Need at least 5 connected players to start the game")
 
         redis = self._get_redis()
-        wolf_count = payload.get("wolf_count")
-        seer_count = payload.get("seer_count")
-        if wolf_count is not None:
-            wolf_count = int(wolf_count)
-        if seer_count is not None:
-            seer_count = int(seer_count)
+        state = await rs.get_game_state(redis, room_id) or {}
+        wolf_count = state.get("wolf_count")
+        seer_count = state.get("seer_count")
 
         assignment = await assign_roles(
             redis,
@@ -234,6 +231,7 @@ class GameRuntime:
             room_id,
             wolf_count=resolved_wolf_count,
             seer_count=resolved_seer_count,
+            ready_player_ids=[],
         )
         players = await rs.get_all_players(redis, room_id)
         await self._emit_role_assignments(room_id, build_role_payloads(assignment, players))
