@@ -106,6 +106,8 @@ class TestGameState:
         gs = GameState(game_id="g3")
         assert gs.wolf_count is None
         assert gs.seer_count is None
+        assert gs.host_id is None
+        assert gs.ready_player_ids == []
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +165,23 @@ class TestEvents:
         d = to_dict(WolfVoteAcceptedPayload(target_id="p2"))
         assert d["event"] == "wolf_vote"
         assert d["accepted"] is True
+
+    def test_lobby_payloads(self):
+        from models.events import (
+            LobbyPlayerReadyChangedPayload,
+            LobbySettingsUpdatedPayload,
+            RoomClosedPayload,
+            to_dict,
+        )
+
+        settings = to_dict(LobbySettingsUpdatedPayload(host_id="host", wolf_count=2, seer_count=1))
+        ready = to_dict(LobbyPlayerReadyChangedPayload(client_id="p1", ready=True))
+        closed = to_dict(RoomClosedPayload(reason="host_disconnected", host_id="host"))
+
+        assert settings["event"] == "lobby:settings_updated"
+        assert ready["event"] == "lobby:player_ready_changed"
+        assert ready["ready_player_ids"] == []
+        assert closed["event"] == "room_closed"
 
     def test_error_payload(self):
         from models.events import ErrorPayload, to_dict

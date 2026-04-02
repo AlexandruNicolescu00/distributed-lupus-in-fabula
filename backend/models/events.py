@@ -98,6 +98,33 @@ class PlayerLeftPayload(PlayerPresencePayload):
 
 
 @dataclass
+class LobbySettingsUpdatedPayload:
+    event: str = "lobby:settings_updated"
+    host_id: str = ""
+    wolf_count: Optional[int] = None
+    seer_count: Optional[int] = None
+
+
+@dataclass
+class LobbyPlayerReadyChangedPayload:
+    event: str = "lobby:player_ready_changed"
+    client_id: str = ""
+    ready: bool = False
+    ready_player_ids: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.ready_player_ids is None:
+            self.ready_player_ids = []
+
+
+@dataclass
+class RoomClosedPayload:
+    event: str = "room_closed"
+    reason: str = ""
+    host_id: str = ""
+
+
+@dataclass
 class PlayerEliminatedPayload:
     """
     Event: ``player_eliminated``
@@ -323,3 +350,22 @@ class SeerActionEvent:
     """
     seer_id:   str = ""
     target_id: str = ""
+
+
+@dataclass
+class LobbyUpdateSettingsEvent:
+    """
+    Event: ``lobby:update_settings``  (client → server)
+    Purpose: updates pre-game lobby settings controlled by the host.
+    """
+    wolf_count: Optional[int] = None
+    seer_count: Optional[int] = None
+
+
+@dataclass
+class LobbyPlayerReadyEvent:
+    """
+    Event: ``lobby:player_ready``  (client → server)
+    Purpose: toggles the ready state of a connected lobby player.
+    """
+    ready: bool = True

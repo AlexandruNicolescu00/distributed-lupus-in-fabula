@@ -21,6 +21,10 @@ from models.events import (
     GamePausedPayload,
     GameResumedPayload,
     GameStateSyncPayload,
+    LobbyPlayerReadyChangedPayload,
+    LobbyPlayerReadyEvent,
+    LobbySettingsUpdatedPayload,
+    LobbyUpdateSettingsEvent,
     NoEliminationPayload,
     PhaseChangedPayload,
     PlayerEliminatedPayload,
@@ -28,6 +32,7 @@ from models.events import (
     PlayerKilledPayload,
     PlayerLeftPayload,
     RoleAssignedPayload,
+    RoomClosedPayload,
     SeerActionAcceptedPayload,
     SeerActionEvent,
     SeerResultPayload,
@@ -48,6 +53,10 @@ class EventType(StrEnum):
     PLAYER_LEFT = "player_left"
     ROOM_CREATED = "room_created"
     ROOM_CLOSED = "room_closed"
+    LOBBY_UPDATE_SETTINGS = "lobby:update_settings"
+    LOBBY_SETTINGS_UPDATED = "lobby:settings_updated"
+    LOBBY_PLAYER_READY = "lobby:player_ready"
+    LOBBY_PLAYER_READY_CHANGED = "lobby:player_ready_changed"
 
     # Gameplay
     GAME_START = "game_start"
@@ -78,6 +87,9 @@ SERVER_EVENT_PAYLOAD_TYPES: dict[EventType, type[Any]] = {
     EventType.GAME_STATE_SYNC: GameStateSyncPayload,
     EventType.PLAYER_JOINED: PlayerJoinedPayload,
     EventType.PLAYER_LEFT: PlayerLeftPayload,
+    EventType.ROOM_CLOSED: RoomClosedPayload,
+    EventType.LOBBY_SETTINGS_UPDATED: LobbySettingsUpdatedPayload,
+    EventType.LOBBY_PLAYER_READY_CHANGED: LobbyPlayerReadyChangedPayload,
     EventType.VOTE_UPDATE: VoteUpdatePayload,
     EventType.PLAYER_ELIMINATED: PlayerEliminatedPayload,
     EventType.PLAYER_KILLED: PlayerKilledPayload,
@@ -97,6 +109,8 @@ CLIENT_EVENT_PAYLOAD_TYPES: dict[EventType, type[Any]] = {
     EventType.CAST_VOTE: CastVoteEvent,
     EventType.WOLF_VOTE: WolfVoteEvent,
     EventType.SEER_ACTION: SeerActionEvent,
+    EventType.LOBBY_UPDATE_SETTINGS: LobbyUpdateSettingsEvent,
+    EventType.LOBBY_PLAYER_READY: LobbyPlayerReadyEvent,
 }
 
 
