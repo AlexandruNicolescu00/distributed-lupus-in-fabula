@@ -456,19 +456,11 @@ async def catch_all(event: str, sid: str, data: dict):
         if event == EventType.SEER_ACTION:
             await game_runtime.handle_seer_action(sid, room_id, client_id, payload)
             return
-        if event in ("lobby:update_settings", "role_setup_updated"):
+        if event in (EventType.LOBBY_UPDATE_SETTINGS, "role_setup_updated"):
             await lobby_runtime.handle_update_settings(room_id, client_id, payload)
             return
-        if event in (EventType.PLAYER_READY, "lobby:player_ready", "player_ready"):
-            # Gestione CUSTOM per far arrivare la lista player completi!
-            ready_state = payload.get("ready", True)
-            updated_player = await state_store.update_player_ready(room_id, client_id, ready_state)
-            if updated_player:
-                all_players = await state_store.get_players(room_id)
-                await _broadcast_passthrough(EventType.PLAYER_READY, room_id, client_id, {
-                    "ready": ready_state,
-                    "players": all_players
-                })
+        if event in (EventType.LOBBY_PLAYER_READY, "player_ready"):
+            await lobby_runtime.handle_player_ready(room_id, client_id, payload)
             return
         if event in (EventType.GAME_START, "lobby:start_game", "start_game"):
             await lobby_runtime.validate_can_start_game(

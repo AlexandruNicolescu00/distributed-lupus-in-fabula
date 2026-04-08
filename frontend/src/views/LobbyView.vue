@@ -125,7 +125,7 @@ function toCardPlayer(p) {
 
   return {
     player_id: id,
-    username:  p.name || id,
+    username:  p.username || p.name || id,
     isHost:    isPlayerHost,
     ready:     isPlayerReady, // Assicuriamoci che questa proprietà si chiami 'ready'
     alive:     true,

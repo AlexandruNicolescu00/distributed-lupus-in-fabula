@@ -3,68 +3,58 @@ import { defineStore } from 'pinia'
 import { gameApi } from '@/services/api'
 import { useSocket } from '@/composables/useSocket'
 
-// -------------------------------------------------------
-// Fasi — allineate con Phase(str, Enum) in backend
-// -------------------------------------------------------
 export const PHASES = {
-  LOBBY:  'LOBBY',
-  DAY:    'DAY',
+  LOBBY: 'LOBBY',
+  DAY: 'DAY',
   VOTING: 'VOTING',
-  NIGHT:  'NIGHT',
-  ENDED:  'ENDED',
+  NIGHT: 'NIGHT',
+  ENDED: 'ENDED',
 }
 
-// -------------------------------------------------------
-// Ruoli — allineati con Role(str, Enum) in backend
-// -------------------------------------------------------
 export const ROLES = {
   VILLAGER: 'VILLAGER',
-  WOLF:     'WOLF',
-  SEER:     'SEER',
+  WOLF: 'WOLF',
+  SEER: 'SEER',
 }
 
-// -------------------------------------------------------
-// Vincitori — allineati con Winner(str, Enum) in backend
-// -------------------------------------------------------
 export const WINNERS = {
   VILLAGERS: 'VILLAGERS',
-  WOLVES:    'WOLVES',
+  WOLVES: 'WOLVES',
 }
 
 export const useGameStore = defineStore('game', () => {
-  // ---- STATE ----
-  const phase           = ref(PHASES.LOBBY)
-  const round           = ref(0)
-  const players         = ref([])       // { player_id, username, role, alive, connected }
+  const phase = ref(PHASES.LOBBY)
+  const round = ref(0)
+  const players = ref([])
   const currentPlayerId = ref(null)
-  const myRole           = ref(null)     // uno dei ROLES
-  const wolfCompanions  = ref([])       // [{ player_id, username }] — solo per i lupi
-  const winner          = ref(null)     // uno dei WINNERS | null
-  const timerEnd        = ref(null)     // timestamp UNIX float (da backend)
+  const hostId = ref(null)
+  const myRole = ref(null)
+  const wolfCompanions = ref([])
+  const winner = ref(null)
+  const timerEnd = ref(null)
   const pendingRoleSetup = ref({ wolves: 1, seers: 1, villagers: 3 })
   const currentRoomCode = ref('')
-  const isLoading       = ref(false)
-  const error           = ref(null)
-  const isPaused        = ref(false)
-  const pauseReason     = ref('')
-  const seerResult      = ref(null)     // { targetId, targetName, role } — solo per il veggente
-  const noElimination   = ref(false)
+  const isLoading = ref(false)
+  const error = ref(null)
+  const isPaused = ref(false)
+  const pauseReason = ref('')
+  const seerResult = ref(null)
+  const noElimination = ref(false)
   const noEliminationReason = ref('')
-  const voteMap         = ref({})       // { voterId: targetId }
-  const gameEndPlayers  = ref([])       // lista finale con ruoli rivelati
-  const roomClosedAt    = ref(0)
+  const voteMap = ref({})
+  const gameEndPlayers = ref([])
+  const roomClosedAt = ref(0)
   const roomClosedMessage = ref('')
 
   const { emit, on } = useSocket()
 
-  // ---- GETTERS ----
-  const alivePlayers  = computed(() => players.value.filter((p) => p.alive))
-  const deadPlayers   = computed(() => players.value.filter((p) => !p.alive))
-  const me            = computed(() => players.value.find((p) => p.player_id === currentPlayerId.value))
-  const isAlive       = computed(() => me.value?.alive ?? false)
-  const isWolf        = computed(() => myRole.value === ROLES.WOLF)
-  const isSeer        = computed(() => myRole.value === ROLES.SEER)
-  const isVillager    = computed(() => myRole.value === ROLES.VILLAGER)
+  const alivePlayers = computed(() => players.value.filter((player) => player.alive))
+  const deadPlayers = computed(() => players.value.filter((player) => !player.alive))
+  const me = computed(() => players.value.find((player) => player.player_id === currentPlayerId.value))
+  const isAlive = computed(() => me.value?.alive ?? false)
+  const isWolf = computed(() => myRole.value === ROLES.WOLF)
+  const isSeer = computed(() => myRole.value === ROLES.SEER)
+  const isVillager = computed(() => myRole.value === ROLES.VILLAGER)
 
   const secondsLeft = computed(() => {
     if (!timerEnd.value) return null
@@ -82,11 +72,18 @@ export const useGameStore = defineStore('game', () => {
   const voteCount = computed(() => {
     const counts = {}
     if (!voteMap.value || Object.keys(voteMap.value).length === 0) return counts
-    Object.values(voteMap.value).forEach(target => {
+    Object.values(voteMap.value).forEach((target) => {
       if (target) counts[target] = (counts[target] || 0) + 1
     })
     return counts
   })
+
+  function extractPayload(message) {
+    if (!message || typeof message !== 'object') return {}
+    return message.payload && typeof message.payload === 'object'
+      ? message.payload
+      : message
+  }
 
   function normalizePlayers(remotePlayers = []) {
     if (!Array.isArray(remotePlayers)) return []
@@ -121,6 +118,23 @@ export const useGameStore = defineStore('game', () => {
     }
 
     return { wolves, seers, villagers }
+  }
+
+  function resolveRoleSetupFromState(state = {}, fallbackPlayersLength = players.value.length) {
+    const totalPlayers = Array.isArray(state.players) ? state.players.length : fallbackPlayersLength
+
+    if (state.role_setup) {
+      return normalizeRoleSetup(totalPlayers, state.role_setup)
+    }
+
+    if (state.wolf_count != null || state.seer_count != null) {
+      return normalizeRoleSetup(totalPlayers, {
+        wolves: state.wolf_count ?? pendingRoleSetup.value.wolves,
+        seers: state.seer_count ?? pendingRoleSetup.value.seers,
+      })
+    }
+
+    return normalizeRoleSetup(totalPlayers, pendingRoleSetup.value)
   }
 
   function makeSeed(input) {
@@ -192,21 +206,11 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
-  // ---- ACTIONS ----
+  function handleStateSync(message) {
+    const payload = extractPayload(message)
+    const state = payload.state || payload
 
-  /** * Gestisce lo snapshot completo inviato dal backend (es. alla riconnessione).
-   * Il payload contiene 'state' (snapshot Redis) e 'players' (lista client_id).
-   */
-  function handleStateSync(payload) {
-    console.log('[GameStore] Ricevuto Full State Sync:', payload)
-    
-    // Se il payload contiene la chiave 'state' (formato RedisEvent del backend)
-    if (payload.state) {
-      _applyState(payload.state)
-    } else {
-      // Fallback nel caso il payload sia direttamente l'oggetto stato
-      _applyState(payload)
-    }
+    _applyState(state)
 
     if (payload.players?.length) {
       const normalizedPlayers = normalizePlayers(payload.players)
@@ -218,7 +222,6 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
-  /** Carica lo stato iniziale via API REST */
   async function loadState(lobbyCode) {
     isLoading.value = true
     try {
@@ -251,21 +254,19 @@ export const useGameStore = defineStore('game', () => {
     })
   }
 
-  /** Registra i listener Socket.IO */
   function listenToGameEvents() {
-    // --- game_state_sync ---
-    // Fondamentale per la fault tolerance distribuita
     on('game_state_sync', handleStateSync)
 
-    // Il backend attuale ribatte start_game senza ancora pubblicare phase_changed.
-    // Portiamo comunque i client nella GameView e usiamo i dati lobby come base.
-    on('start_game', (data = {}) => {
-      pendingRoleSetup.value = normalizeRoleSetup(
-        players.value.length || data.payload?.players?.length || 0,
-        data.payload?.role_setup ?? pendingRoleSetup.value
+    const handleGameStart = (message = {}) => {
+      const payload = extractPayload(message)
+      const incomingPlayers = payload.players?.length ? payload.players : players.value
+      pendingRoleSetup.value = resolveRoleSetupFromState(
+        payload.role_setup ? { role_setup: payload.role_setup } : payload,
+        incomingPlayers.length
       )
-      if (data.payload?.players?.length) {
-        const normalizedPlayers = normalizePlayers(data.payload.players)
+
+      if (payload.players?.length) {
+        const normalizedPlayers = normalizePlayers(payload.players)
         const rolesMissing = normalizedPlayers.every((player) => !player.role)
         players.value = rolesMissing
           ? assignLocalRoles(normalizedPlayers, pendingRoleSetup.value, currentRoomCode.value)
@@ -275,116 +276,131 @@ export const useGameStore = defineStore('game', () => {
         players.value = assignLocalRoles(players.value, pendingRoleSetup.value, currentRoomCode.value)
         myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
       }
+
       if (phase.value === PHASES.LOBBY) {
         phase.value = PHASES.DAY
       }
+    }
+
+    on('game_start', handleGameStart)
+    on('start_game', handleGameStart)
+
+    on('phase_changed', (message) => {
+      const payload = extractPayload(message)
+      phase.value = payload.phase ?? phase.value
+      round.value = payload.round ?? round.value
+      timerEnd.value = payload.timer_end ?? null
+      isPaused.value = false
+      noElimination.value = false
+      seerResult.value = null
+      voteMap.value = {}
     })
 
-    on('phase_changed', ({ phase: newPhase, round: newRound, timer_end }) => {
-      phase.value             = newPhase
-      round.value             = newRound
-      timerEnd.value          = timer_end
-      isPaused.value          = false
-      noElimination.value     = false
-      seerResult.value        = null
-      voteMap.value           = {}
+    on('role_assigned', (message) => {
+      const payload = extractPayload(message)
+      myRole.value = payload.role ?? myRole.value
+      wolfCompanions.value = payload.wolf_companions ?? []
     })
 
-    on('role_assigned', ({ role, wolf_companions }) => {
-      myRole.value         = role
-      wolfCompanions.value = wolf_companions ?? []
+    on('vote_update', (message) => {
+      const payload = extractPayload(message)
+      voteMap.value = { ...voteMap.value, [payload.voter_id]: payload.target_id }
     })
 
-    on('vote_update', ({ voter_id, target_id }) => {
-      voteMap.value = { ...voteMap.value, [voter_id]: target_id }
-    })
-
-    on('player_eliminated', ({ player_id, role: revealedRole }) => {
-      const player = players.value.find((p) => p.player_id === player_id)
+    on('player_eliminated', (message) => {
+      const payload = extractPayload(message)
+      const player = players.value.find((entry) => entry.player_id === payload.player_id)
       if (player) {
         player.alive = false
-        player.role  = revealedRole
+        player.role = payload.role
       }
     })
 
-    on('player_killed', ({ player_id }) => {
-      const player = players.value.find((p) => p.player_id === player_id)
+    on('player_killed', (message) => {
+      const payload = extractPayload(message)
+      const player = players.value.find((entry) => entry.player_id === payload.player_id)
       if (player) player.alive = false
     })
 
-    on('seer_result', ({ target_id, target_name, role }) => {
-      seerResult.value = { targetId: target_id, targetName: target_name, role }
+    on('seer_result', (message) => {
+      const payload = extractPayload(message)
+      seerResult.value = {
+        targetId: payload.target_id,
+        targetName: payload.target_name,
+        role: payload.role,
+      }
     })
 
-    on('no_elimination', ({ reason }) => {
-      noElimination.value       = true
-      noEliminationReason.value = reason
+    on('no_elimination', (message) => {
+      const payload = extractPayload(message)
+      noElimination.value = true
+      noEliminationReason.value = payload.reason
     })
 
-    on('game_ended', ({ winner: w, round: finalRound, players: finalPlayers }) => {
-      winner.value          = w
-      phase.value           = PHASES.ENDED
-      round.value           = finalRound
-      gameEndPlayers.value  = finalPlayers ?? []
-      if (finalPlayers?.length) {
-        players.value = finalPlayers.map((fp) => ({
-          player_id: fp.player_id,
-          username:  fp.username,
-          role:      fp.role,
-          alive:     fp.alive,
-          connected: true,
+    on('game_ended', (message) => {
+      const payload = extractPayload(message)
+      winner.value = payload.winner ?? null
+      phase.value = PHASES.ENDED
+      round.value = payload.round ?? round.value
+      gameEndPlayers.value = payload.players ?? []
+
+      if (payload.players?.length) {
+        players.value = payload.players.map((player) => ({
+          player_id: player.player_id,
+          username: player.username,
+          role: player.role,
+          alive: player.alive,
+          connected: player.connected ?? true,
         }))
       }
     })
 
-    on('game_paused', ({ reason }) => {
-      isPaused.value    = true
-      pauseReason.value = reason ?? ''
+    on('game_paused', (message) => {
+      const payload = extractPayload(message)
+      isPaused.value = true
+      pauseReason.value = payload.reason ?? ''
     })
 
-    on('game_resumed', ({ phase: resumePhase, timer_end }) => {
+    on('game_resumed', (message) => {
+      const payload = extractPayload(message)
       isPaused.value = false
-      if (resumePhase) phase.value   = resumePhase
-      if (timer_end)   timerEnd.value = timer_end
+      if (payload.phase) phase.value = payload.phase
+      if (payload.timer_end) timerEnd.value = payload.timer_end
     })
 
-    on('room_closed', ({ payload = {} }) => {
+    on('room_closed', (message) => {
+      const payload = extractPayload(message)
       roomClosedMessage.value = payload.reason ?? "L'host ha chiuso la partita."
       roomClosedAt.value = Date.now()
     })
   }
 
   function reset() {
-    phase.value               = PHASES.LOBBY
-    round.value               = 0
-    players.value             = []
-    myRole.value              = null
-    wolfCompanions.value      = []
-    winner.value              = null
-    timerEnd.value            = null
-    pendingRoleSetup.value    = { wolves: 1, seers: 1, villagers: 3 }
-    currentRoomCode.value     = ''
-    isPaused.value            = false
-    pauseReason.value         = ''
-    seerResult.value          = null
-    noElimination.value       = false
+    phase.value = PHASES.LOBBY
+    round.value = 0
+    players.value = []
+    myRole.value = null
+    wolfCompanions.value = []
+    winner.value = null
+    timerEnd.value = null
+    pendingRoleSetup.value = { wolves: 1, seers: 1, villagers: 3 }
+    currentRoomCode.value = ''
+    isPaused.value = false
+    pauseReason.value = ''
+    seerResult.value = null
+    noElimination.value = false
     noEliminationReason.value = ''
-    voteMap.value             = {}
-    gameEndPlayers.value      = []
-    roomClosedAt.value        = 0
-    roomClosedMessage.value   = ''
-    error.value               = null
+    voteMap.value = {}
+    gameEndPlayers.value = []
+    roomClosedAt.value = 0
+    roomClosedMessage.value = ''
+    error.value = null
   }
 
   function _applyState(data) {
-    phase.value           = data.phase           ?? PHASES.LOBBY
-    round.value           = data.round           ?? 0
-    if (data.role_setup) {
-      pendingRoleSetup.value = normalizeRoleSetup(
-        Array.isArray(data.players) ? data.players.length : players.value.length,
-        data.role_setup
-      )
-    }
+    phase.value = data.phase ?? PHASES.LOBBY
+    round.value = data.round ?? 0
+    pendingRoleSetup.value = resolveRoleSetupFromState(data)
 
     const normalizedPlayers = normalizePlayers(data.players ?? [])
     const rolesMissing = normalizedPlayers.length > 0 && normalizedPlayers.every((player) => !player.role)
@@ -392,22 +408,58 @@ export const useGameStore = defineStore('game', () => {
       ? assignLocalRoles(normalizedPlayers, pendingRoleSetup.value, currentRoomCode.value)
       : normalizedPlayers
     currentPlayerId.value = data.currentPlayerId ?? currentPlayerId.value
-    myRole.value          = data.myRole ?? players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
-    winner.value          = data.winner          ?? null
-    timerEnd.value        = data.timer_end       ?? null // Mappatura snake_case da Redis
-    isPaused.value        = data.paused          ?? false  
-    voteMap.value         = data.voteMap         ?? {}
+    hostId.value = data.host_id ?? hostId.value
+    myRole.value = data.myRole ?? players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
+    winner.value = data.winner ?? null
+    timerEnd.value = data.timer_end ?? null
+    isPaused.value = data.paused ?? false
+    voteMap.value = data.vote_map ?? data.voteMap ?? {}
   }
 
   return {
-    phase, round, players, currentPlayerId, myRole, wolfCompanions,
-    winner, timerEnd, isLoading, error, isPaused, pauseReason,
-    seerResult, noElimination, noEliminationReason, voteMap,
-    gameEndPlayers, roomClosedAt, roomClosedMessage,
-    alivePlayers, deadPlayers, me, isAlive, isWolf, isSeer, isVillager,
-    secondsLeft, timerProgress, voteCount,
-    normalizeRoleSetup, normalizePlayers, bootstrapFromLobby, loadState, handleStateSync,
-    vote, wolfVote, seerAction, emitRoomClosed, listenToGameEvents, reset,
-    PHASES, ROLES, WINNERS,
+    phase,
+    round,
+    players,
+    currentPlayerId,
+    hostId,
+    myRole,
+    wolfCompanions,
+    winner,
+    timerEnd,
+    isLoading,
+    error,
+    isPaused,
+    pauseReason,
+    seerResult,
+    noElimination,
+    noEliminationReason,
+    voteMap,
+    gameEndPlayers,
+    roomClosedAt,
+    roomClosedMessage,
+    alivePlayers,
+    deadPlayers,
+    me,
+    isAlive,
+    isWolf,
+    isSeer,
+    isVillager,
+    secondsLeft,
+    timerProgress,
+    voteCount,
+    normalizeRoleSetup,
+    normalizePlayers,
+    bootstrapFromLobby,
+    loadState,
+    handleStateSync,
+    vote,
+    wolfVote,
+    seerAction,
+    emitRoomClosed,
+    listenToGameEvents,
+    reset,
+    PHASES,
+    ROLES,
+    WINNERS,
   }
 })

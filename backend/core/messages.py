@@ -51,8 +51,6 @@ class EventType(StrEnum):
     # Gestione stanza
     PLAYER_JOINED = "player_joined"
     PLAYER_LEFT = "player_left"
-    PLAYER_READY = "player_ready"
-    ROLE_SETUP_UPDATED = "role_setup_updated"
     ROOM_CREATED = "room_created"
     ROOM_CLOSED = "room_closed"
     LOBBY_UPDATE_SETTINGS = "lobby:update_settings"
@@ -60,16 +58,30 @@ class EventType(StrEnum):
     LOBBY_PLAYER_READY = "lobby:player_ready"
     LOBBY_PLAYER_READY_CHANGED = "lobby:player_ready_changed"
 
-    # Gameplay (placeholder — aggiornare con Membro 1)
-    GAME_START = "start_game"
-    GAME_END = "game_end"
+    # Gameplay
+    GAME_START = "game_start"
+    GAME_ENDED = "game_ended"
     GAME_STATE_SYNC = "game_state_sync"  # snapshot completo stato di gioco
     PLAYER_ACTION = "player_action"  # azione di un giocatore
-    CHAT_MESSAGE = "chat_message"
+    VOTE_UPDATE = "vote_update"
+    PLAYER_ELIMINATED = "player_eliminated"
+    PLAYER_KILLED = "player_killed"
+    SEER_RESULT = "seer_result"
+    GAME_PAUSED = "game_paused"
+    GAME_RESUMED = "game_resumed"
+    PHASE_CHANGED = "phase_changed"
+    ROLE_ASSIGNED = "role_assigned"
+    NO_ELIMINATION = "no_elimination"
+
+    # Gameplay client -> server
+    CAST_VOTE = "cast_vote"
+    WOLF_VOTE = "wolf_vote"
+    SEER_ACTION = "seer_action"
 
     # Sistema
     ERROR = "error"
     PONG = "pong"  # risposta al ping del client
+    CHAT_MESSAGE = "chat_message"
 
 
 SERVER_EVENT_PAYLOAD_TYPES: dict[EventType, type[Any]] = {

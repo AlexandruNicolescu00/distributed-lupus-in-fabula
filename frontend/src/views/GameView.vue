@@ -24,6 +24,9 @@ const nightActionDone = ref(false)
 const showNightOverlay = ref(false)
 const showRoomClosedPopup = ref(false)
 const lobbyCode = route.params.id || lobby.lobbyCode
+const isCurrentUserHost = computed(() =>
+  lobby.isHost || (game.hostId && game.hostId === game.currentPlayerId)
+)
 
 onMounted(async () => {
   if (!lobbyCode) {
@@ -44,7 +47,7 @@ onMounted(async () => {
   game.currentPlayerId = clientId
   game.bootstrapFromLobby(lobby.players, clientId, lobby.roleSummary, lobbyCode)
 
-  const wsUrl = import.meta.env.VITE_WS_URL || 'http://game.local'
+  const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:8000'
   connect(wsUrl, {
     auth: {
       client_id: clientId,
@@ -86,7 +89,7 @@ watch(
   (closedAt) => {
     if (!closedAt) return
 
-    if (lobby.isHost) {
+    if (isCurrentUserHost.value) {
       game.reset()
       lobby.reset()
       chat.reset()
@@ -182,11 +185,8 @@ function initials(name) {
 }
 
 function leaveGame() {
-  if (lobby.isHost) {
-    emit('room_closed', {
-      lobby_code: lobbyCode,
-      reason: "L'host ha chiuso la partita.",
-    })
+  if (isCurrentUserHost.value) {
+    game.emitRoomClosed(lobbyCode)
     return
   }
 
@@ -324,7 +324,7 @@ function handleRoomClosedConfirm() {
         </div>
 
         <button class="leave-game-btn leave-game-btn--sidebar" @click="leaveGame">
-          {{ lobby.isHost ? 'Chiudi Partita' : 'Abbandona Partita' }}
+          {{ isCurrentUserHost ? 'Chiudi Partita' : 'Abbandona Partita' }}
         </button>
       </aside>
     </div>

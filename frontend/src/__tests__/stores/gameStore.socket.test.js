@@ -14,37 +14,82 @@ vi.mock('@/composables/useSocket', () => ({
 
 import { PHASES, useGameStore } from '@/stores/gameStore'
 
-describe('gameStore — socket events', () => {
+describe('gameStore - socket events', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.keys(socketHandlers).forEach((key) => delete socketHandlers[key])
   })
 
-  it('handleStateSync usa anche payload.players del backend', () => {
+  it('handleStateSync reads payload.players from websocket messages', () => {
     const game = useGameStore()
+    game.currentPlayerId = 'p1'
 
     game.handleStateSync({
-      state: { phase: PHASES.DAY, round: 2 },
-      players: [
-        { player_id: 'p1', name: 'Alice', connected: true },
-        { player_id: 'p2', username: 'Bob', alive: false },
-      ],
+      payload: {
+        state: { phase: PHASES.DAY, round: 2, host_id: 'p1' },
+        players: [
+          { player_id: 'p1', name: 'Alice', connected: true },
+          { player_id: 'p2', username: 'Bob', alive: false },
+        ],
+      },
     })
 
     expect(game.phase).toBe(PHASES.DAY)
     expect(game.round).toBe(2)
-    expect(game.players).toEqual([
-      { player_id: 'p1', username: 'Alice', role: null, alive: true, connected: true },
-      { player_id: 'p2', username: 'Bob', role: null, alive: false, connected: true },
-    ])
+    expect(game.hostId).toBe('p1')
+    expect(game.players).toHaveLength(2)
+    expect(game.players[0]).toMatchObject({
+      player_id: 'p1',
+      username: 'Alice',
+      alive: true,
+      connected: true,
+    })
+    expect(game.players[1]).toMatchObject({
+      player_id: 'p2',
+      username: 'Bob',
+      alive: false,
+      connected: true,
+    })
   })
 
-  it('start_game porta fuori dalla fase LOBBY anche prima di phase_changed', () => {
+  it('game_start moves the store out of LOBBY even before phase_changed', () => {
     const game = useGameStore()
     game.listenToGameEvents()
 
-    socketHandlers.start_game?.({})
+    socketHandlers.game_start?.({})
 
     expect(game.phase).toBe(PHASES.DAY)
+  })
+
+  it('phase_changed reads the backend payload wrapper', () => {
+    const game = useGameStore()
+    game.listenToGameEvents()
+
+    socketHandlers.phase_changed?.({
+      payload: {
+        phase: PHASES.NIGHT,
+        round: 3,
+        timer_end: 12345,
+      },
+    })
+
+    expect(game.phase).toBe(PHASES.NIGHT)
+    expect(game.round).toBe(3)
+    expect(game.timerEnd).toBe(12345)
+  })
+
+  it('role_assigned reads the backend payload wrapper', () => {
+    const game = useGameStore()
+    game.listenToGameEvents()
+
+    socketHandlers.role_assigned?.({
+      payload: {
+        role: 'WOLF',
+        wolf_companions: [{ player_id: 'p2', username: 'Bob' }],
+      },
+    })
+
+    expect(game.myRole).toBe('WOLF')
+    expect(game.wolfCompanions).toEqual([{ player_id: 'p2', username: 'Bob' }])
   })
 })
