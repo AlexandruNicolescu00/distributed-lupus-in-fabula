@@ -33,19 +33,23 @@ onMounted(async () => {
     router.push('/')
     return
   }
-
+ 
   game.listenToGameEvents()
   chat.listenToMessages()
 
-  let clientId = sessionStorage.getItem('client_id') || localStorage.getItem('client_id')
+  let clientId = sessionStorage.getItem('client_id')
   if (!clientId) {
     clientId = `user_${Math.random().toString(36).slice(2, 11)}`
     sessionStorage.setItem('client_id', clientId)
-    localStorage.setItem('client_id', clientId)
   }
 
   game.currentPlayerId = clientId
-  game.bootstrapFromLobby(lobby.players, clientId, lobby.roleSummary, lobbyCode)
+  
+  // FIX 1: Facciamo il bootstrap SOLO se il gameStore è vuoto (es. hai premuto F5). 
+  // Altrimenti distruggiamo i dati freschi (come i ruoli) appena arrivati dal backend!
+  if (game.players.length === 0) {
+    game.bootstrapFromLobby(lobby.players, clientId, lobby.roleSummary, lobbyCode)
+  }
 
   const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:8000'
   connect(wsUrl, {
@@ -128,7 +132,11 @@ const roleLabel = computed(() => {
     [ROLES.WOLF]: { icon: '🐺', name: 'Lupo', desc: 'Elimina i villici e resta nascosto.' },
     [ROLES.SEER]: { icon: '🔮', name: 'Veggente', desc: 'Scopri chi sono i lupi.' },
   }
-  return map[game.myRole] ?? { icon: '❓', name: 'In attesa', desc: 'Il tuo ruolo verra rivelato presto.' }
+  // FIX 2: Il backend manda "wolf" in minuscolo, il frontend usa "WOLF". 
+  // Trasformiamo in maiuscolo per evitare il fallback all'infinito!
+  const normalizedRole = game.myRole ? game.myRole.toUpperCase() : null
+  
+  return map[normalizedRole] ?? { icon: '❓', name: 'In attesa', desc: 'Il tuo ruolo verrà rivelato presto.' }
 })
 
 const canVote = computed(() => game.phase === PHASES.VOTING && game.isAlive && !myVote.value)
@@ -152,7 +160,7 @@ const ownPlayerCard = computed(() => {
   return {
     player_id: me.player_id,
     username: me.username,
-    role: me.role,
+    role: me.role ?? game.myRole,
     ready: true,
     alive: me.alive,
     connected: me.connected,

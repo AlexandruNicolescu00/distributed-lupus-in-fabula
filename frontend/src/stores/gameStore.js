@@ -45,7 +45,7 @@ export const useGameStore = defineStore('game', () => {
   const gameEndPlayers = ref([])
   const roomClosedAt = ref(0)
   const roomClosedMessage = ref('')
-
+  const listenersBound = ref(false)
   const { emit, on } = useSocket()
 
   const alivePlayers = computed(() => players.value.filter((player) => player.alive))
@@ -79,10 +79,11 @@ export const useGameStore = defineStore('game', () => {
   })
 
   function extractPayload(message) {
-    if (!message || typeof message !== 'object') return {}
-    return message.payload && typeof message.payload === 'object'
-      ? message.payload
-      : message
+    let msg = message
+    if (typeof msg === 'string') {
+      try { msg = JSON.parse(msg) } catch (e) { return {} }
+    }
+    return msg?.payload && typeof msg.payload === 'object' ? msg.payload : (msg || {})
   }
 
   function normalizePlayers(remotePlayers = []) {
@@ -137,51 +138,6 @@ export const useGameStore = defineStore('game', () => {
     return normalizeRoleSetup(totalPlayers, pendingRoleSetup.value)
   }
 
-  function makeSeed(input) {
-    let seed = 2166136261
-    for (const char of input) {
-      seed ^= char.charCodeAt(0)
-      seed = Math.imul(seed, 16777619)
-    }
-    return seed >>> 0
-  }
-
-  function seededShuffle(items, seedInput) {
-    const shuffled = [...items]
-    let seed = makeSeed(seedInput)
-
-    for (let index = shuffled.length - 1; index > 0; index -= 1) {
-      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0
-      const swapIndex = seed % (index + 1)
-      ;[shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]]
-    }
-
-    return shuffled
-  }
-
-  function assignLocalRoles(normalizedPlayers, roleSetup, roomCode = '') {
-    const totalPlayers = normalizedPlayers.length
-    if (totalPlayers === 0) return []
-
-    const normalizedSetup = normalizeRoleSetup(totalPlayers, roleSetup)
-    const rolePool = [
-      ...Array(normalizedSetup.wolves).fill(ROLES.WOLF),
-      ...Array(normalizedSetup.seers).fill(ROLES.SEER),
-      ...Array(normalizedSetup.villagers).fill(ROLES.VILLAGER),
-    ]
-
-    const shuffledRoles = seededShuffle(
-      rolePool,
-      `${roomCode}:${normalizedPlayers.map((player) => player.player_id).join('|')}`
-    )
-
-    return normalizedPlayers.map((player, index) => ({
-      ...player,
-      role: shuffledRoles[index] ?? ROLES.VILLAGER,
-      alive: player.alive ?? true,
-    }))
-  }
-
   function bootstrapFromLobby(lobbyPlayers = [], playerId = null, roleSetup = null, roomCode = '') {
     const normalizedPlayers = normalizePlayers(lobbyPlayers)
     const effectiveRoleSetup = normalizeRoleSetup(
@@ -190,7 +146,7 @@ export const useGameStore = defineStore('game', () => {
     )
 
     if (normalizedPlayers.length > 0) {
-      players.value = assignLocalRoles(normalizedPlayers, effectiveRoleSetup, roomCode)
+      players.value = [...normalizedPlayers]
     }
 
     if (playerId) {
@@ -199,11 +155,7 @@ export const useGameStore = defineStore('game', () => {
 
     currentRoomCode.value = roomCode || currentRoomCode.value
     pendingRoleSetup.value = effectiveRoleSetup
-    myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? null
-
-    if (phase.value === PHASES.LOBBY) {
-      phase.value = PHASES.DAY
-    }
+    myRole.value = null
   }
 
   function handleStateSync(message) {
@@ -213,11 +165,7 @@ export const useGameStore = defineStore('game', () => {
     _applyState(state)
 
     if (payload.players?.length) {
-      const normalizedPlayers = normalizePlayers(payload.players)
-      const rolesMissing = normalizedPlayers.every((player) => !player.role)
-      players.value = rolesMissing
-        ? assignLocalRoles(normalizedPlayers, pendingRoleSetup.value, currentRoomCode.value)
-        : normalizedPlayers
+      players.value = normalizePlayers([...payload.players])
       myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
     }
   }
@@ -255,7 +203,8 @@ export const useGameStore = defineStore('game', () => {
   }
 
   function listenToGameEvents() {
-    on('game_state_sync', handleStateSync)
+    if (listenersBound.value) return
+    listenersBound.value = true
 
     const handleGameStart = (message = {}) => {
       const payload = extractPayload(message)
@@ -266,40 +215,42 @@ export const useGameStore = defineStore('game', () => {
       )
 
       if (payload.players?.length) {
-        const normalizedPlayers = normalizePlayers(payload.players)
-        const rolesMissing = normalizedPlayers.every((player) => !player.role)
-        players.value = rolesMissing
-          ? assignLocalRoles(normalizedPlayers, pendingRoleSetup.value, currentRoomCode.value)
-          : normalizedPlayers
-        myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
-      } else if (players.value.length > 0 && players.value.every((player) => !player.role)) {
-        players.value = assignLocalRoles(players.value, pendingRoleSetup.value, currentRoomCode.value)
+        players.value = normalizePlayers([...payload.players])
         myRole.value = players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value
       }
 
       if (phase.value === PHASES.LOBBY) {
-        phase.value = PHASES.DAY
+        phase.value = PHASES.NIGHT
       }
     }
 
     on('game_start', handleGameStart)
     on('start_game', handleGameStart)
 
-    on('phase_changed', (message) => {
+    // Snapshot completo per riconnessioni o F5
+    on('game_state_sync', (message) => {
       const payload = extractPayload(message)
-      phase.value = payload.phase ?? phase.value
-      round.value = payload.round ?? round.value
-      timerEnd.value = payload.timer_end ?? null
-      isPaused.value = false
-      noElimination.value = false
-      seerResult.value = null
-      voteMap.value = {}
+      if (payload.state) _applyState(payload.state)
+      if (payload.players) players.value = normalizePlayers([...payload.players])
     })
 
+    // CAMBIO FASE - Il motore del gioco!
+    on('phase_changed', (message) => {
+      const payload = extractPayload(message)
+      console.log('[GameStore] Fase cambiata in:', payload.phase)
+      phase.value = payload.phase
+      round.value = payload.round
+      timerEnd.value = payload.timer_end
+    })
+
+    // RUOLO ASSEGNATO (Evento privato per te)
     on('role_assigned', (message) => {
       const payload = extractPayload(message)
-      myRole.value = payload.role ?? myRole.value
-      wolfCompanions.value = payload.wolf_companions ?? []
+      console.log('[GameStore] Ruolo assegnato:', payload.role)
+      myRole.value = payload.role
+      if (payload.wolf_companions) {
+        wolfCompanions.value = [...payload.wolf_companions]
+      }
     })
 
     on('vote_update', (message) => {
@@ -314,12 +265,14 @@ export const useGameStore = defineStore('game', () => {
         player.alive = false
         player.role = payload.role
       }
+      players.value = [...players.value] // Forza reattività Vue
     })
 
     on('player_killed', (message) => {
       const payload = extractPayload(message)
       const player = players.value.find((entry) => entry.player_id === payload.player_id)
       if (player) player.alive = false
+      players.value = [...players.value] // Forza reattività Vue
     })
 
     on('seer_result', (message) => {
@@ -342,16 +295,10 @@ export const useGameStore = defineStore('game', () => {
       winner.value = payload.winner ?? null
       phase.value = PHASES.ENDED
       round.value = payload.round ?? round.value
-      gameEndPlayers.value = payload.players ?? []
-
-      if (payload.players?.length) {
-        players.value = payload.players.map((player) => ({
-          player_id: player.player_id,
-          username: player.username,
-          role: player.role,
-          alive: player.alive,
-          connected: player.connected ?? true,
-        }))
+      
+      if (payload.players) {
+        gameEndPlayers.value = [...payload.players]
+        players.value = normalizePlayers([...payload.players])
       }
     })
 
@@ -403,10 +350,8 @@ export const useGameStore = defineStore('game', () => {
     pendingRoleSetup.value = resolveRoleSetupFromState(data)
 
     const normalizedPlayers = normalizePlayers(data.players ?? [])
-    const rolesMissing = normalizedPlayers.length > 0 && normalizedPlayers.every((player) => !player.role)
-    players.value = rolesMissing
-      ? assignLocalRoles(normalizedPlayers, pendingRoleSetup.value, currentRoomCode.value)
-      : normalizedPlayers
+    players.value = [...normalizedPlayers]
+    
     currentPlayerId.value = data.currentPlayerId ?? currentPlayerId.value
     hostId.value = data.host_id ?? hostId.value
     myRole.value = data.myRole ?? players.value.find((player) => player.player_id === currentPlayerId.value)?.role ?? myRole.value

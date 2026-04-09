@@ -27,8 +27,7 @@ const MAX_PLAYERS = 12
 // ---- LIFECYCLE: CONNESSIONE DISTRIBUITA ----
 onMounted(async () => {
   // 1. Validazione sessione: se non abbiamo un codice o un nome, torniamo alla home
-  const savedName = sessionStorage.getItem('client_id') || localStorage.getItem('client_id')
-  
+  const savedName = sessionStorage.getItem('client_id')  
   if (!lobbyCodeFromUrl || !savedName) {
     console.warn('[LobbyView] Dati sessione mancanti, redirect home')
     router.push('/')
@@ -211,9 +210,7 @@ const settingsRows = computed(() => [
             <div
               class="progress-bar"
               :style="{
-                width: lobbyStore.players.length > 1
-                  ? (lobbyStore.readyCount / (lobbyStore.players.length - 1)) * 100 + '%'
-                  : '0%'
+                width: `${lobbyStore.readyProgress}%`
               }"
             ></div>
           </div>

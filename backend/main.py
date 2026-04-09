@@ -32,6 +32,7 @@ from services.lobby_logic import (
     ensure_domain_player,
     get_player,
     mark_player_disconnected,
+    promote_host_if_needed,
     sync_room_state as sync_lobby_room_state,
 )
 from services.lobby_runtime import LobbyRuntime
@@ -275,6 +276,7 @@ async def disconnect(sid: str):
     await mark_player_disconnected(_domain_redis(), room_id, client_id or sid)
 
     remaining = await state_store.remove_player(room_id, client_id or sid)
+    await promote_host_if_needed(_domain_redis(), room_id, remaining)
     await sync_lobby_room_state(_domain_redis(), state_store, room_id)
     leaving_player = await get_player(_domain_redis(), room_id, client_id or sid)
 

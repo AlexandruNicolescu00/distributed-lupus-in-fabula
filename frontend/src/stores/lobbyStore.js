@@ -7,6 +7,8 @@ export const useLobbyStore = defineStore('lobby', () => {
   const players = ref([])
   const currentPlayerId = ref(null)
   const roleSetup = ref({ wolves: 1, seers: 1 })
+  const hostPlayerId = ref(null)
+  const readyPlayerIds = ref([])
   const isLoading = ref(false)
   const error = ref(null)
   const listenersBound = ref(false)
@@ -29,6 +31,11 @@ export const useLobbyStore = defineStore('lobby', () => {
   const readyCount = computed(() =>
     players.value.filter((player) => player.ready && !(player.is_host || player.isHost)).length
   )
+  const readyProgress = computed(() => {
+    const guestsCount = Math.max(0, players.value.filter((player) => !(player.is_host || player.isHost)).length)
+    if (guestsCount === 0) return 0
+    return (readyCount.value / guestsCount) * 100
+  })
 
   const roleSummary = computed(() => normalizeRoleSetup(players.value.length))
   const maxSeers = computed(() => (players.value.length >= 5 ? 1 : 0))
@@ -38,11 +45,17 @@ export const useLobbyStore = defineStore('lobby', () => {
     return Math.max(1, Math.floor((Math.max(totalPlayers - seers, 0) - 1) / 2))
   })
 
+  // FIX: Ora la funzione è "a prova di bomba" e legge i JSON stringificati!
   function extractPayload(message) {
-    if (!message || typeof message !== 'object') return {}
-    return message.payload && typeof message.payload === 'object'
-      ? message.payload
-      : message
+    let msg = message
+    if (typeof msg === 'string') {
+      try { msg = JSON.parse(msg) } catch (e) { return {} }
+    }
+    // Nel caso il payload sia annidato e stringificato a sua volta
+    if (msg?.payload && typeof msg.payload === 'string') {
+      try { msg.payload = JSON.parse(msg.payload) } catch (e) {}
+    }
+    return msg?.payload && typeof msg.payload === 'object' ? msg.payload : (msg || {})
   }
 
   function playerIdOf(player) {
@@ -51,6 +64,18 @@ export const useLobbyStore = defineStore('lobby', () => {
 
   function hostIdFromPlayers() {
     return players.value.find((player) => player.is_host || player.isHost)?.player_id ?? null
+  }
+
+  function syncLobbyState(state = {}) {
+    if (state.host_id !== undefined) {
+      hostPlayerId.value = state.host_id ?? null
+    } else if (!hostPlayerId.value) {
+      hostPlayerId.value = hostIdFromPlayers()
+    }
+
+    if (Array.isArray(state.ready_player_ids)) {
+      readyPlayerIds.value = [...state.ready_player_ids]
+    }
   }
 
   function normalizeRoleSetup(totalPlayers = players.value.length, source = roleSetup.value) {
@@ -90,8 +115,10 @@ export const useLobbyStore = defineStore('lobby', () => {
   function parsePlayers(remotePlayers, state = {}) {
     if (!Array.isArray(remotePlayers)) return players.value
 
-    const readyPlayerIds = new Set(state.ready_player_ids ?? [])
-    const hostId = state.host_id ?? null
+    syncLobbyState(state)
+
+    const readySet = new Set(readyPlayerIds.value)
+    const hostId = hostPlayerId.value
     const hasExplicitHost = remotePlayers.some(
       (player) => typeof player === 'object' && (player.is_host === true || player.isHost === true)
     )
@@ -101,13 +128,13 @@ export const useLobbyStore = defineStore('lobby', () => {
         ? playerIdOf(player) ?? `player-${index}`
         : player ?? `player-${index}`
 
-      const isPlayerHost = hostId
-        ? resolvedId === hostId
-        : hasExplicitHost
-          ? (player?.is_host === true || player?.isHost === true)
+      const isPlayerHost = hasExplicitHost
+        ? (player?.is_host === true || player?.isHost === true)
+        : hostId
+          ? resolvedId === hostId
           : index === 0
 
-      const readyFromState = readyPlayerIds.has(resolvedId)
+      const readyFromState = readySet.has(resolvedId)
       const readyFromPayload = typeof player === 'object' ? player.ready === true : false
 
       return {
@@ -143,8 +170,9 @@ export const useLobbyStore = defineStore('lobby', () => {
     return syncRoleSetup()
   }
 
-  function updateReadyStatesFromIds(readyPlayerIds = []) {
-    const readySet = new Set(readyPlayerIds)
+  function updateReadyStatesFromIds(nextReadyPlayerIds = []) {
+    readyPlayerIds.value = Array.isArray(nextReadyPlayerIds) ? [...nextReadyPlayerIds] : []
+    const readySet = new Set(readyPlayerIds.value)
     players.value = players.value.map((player) => {
       const playerId = playerIdOf(player)
       const host = player.is_host || player.isHost
@@ -153,6 +181,19 @@ export const useLobbyStore = defineStore('lobby', () => {
         ready: host ? true : readySet.has(playerId),
       }
     })
+  }
+
+  function setPlayerReadyLocally(targetId, isReady) {
+    if (!targetId) return
+
+    const nextReadySet = new Set(readyPlayerIds.value)
+    if (isReady) {
+      nextReadySet.add(targetId)
+    } else {
+      nextReadySet.delete(targetId)
+    }
+
+    updateReadyStatesFromIds([...nextReadySet])
   }
 
   function ensureHostReadySynced() {
@@ -185,90 +226,59 @@ export const useLobbyStore = defineStore('lobby', () => {
 
     on('game_state_sync', (message) => {
       const payload = extractPayload(message)
+      console.log('[Lobby] game_state_sync:', payload)
+      if (payload.players) {
+        players.value = [...payload.players]
+      }
+      
       const state = payload.state || {}
-      players.value = parsePlayers(payload.players || [], state)
-      applyRoleSetup(state)
-      ensureHostReadySynced()
+      if (state.host_id) hostPlayerId.value = state.host_id
+      if (state.role_setup) {
+        roleSetup.value.wolves = state.role_setup.wolves ?? roleSetup.value.wolves
+        roleSetup.value.seers = state.role_setup.seers ?? roleSetup.value.seers
+      }
     })
 
     on('player_joined', (message) => {
       const payload = extractPayload(message)
-      if (Array.isArray(payload.players)) {
-        players.value = parsePlayers(payload.players, {
-          host_id: hostIdFromPlayers(),
-        })
-        syncRoleSetup()
-        return
+      console.log('[Lobby] player_joined:', payload)
+      if (payload.players) {
+        players.value = [...payload.players]
       }
-
-      const newId = payload.client_id
-      if (!newId || players.value.some((player) => playerIdOf(player) === newId)) return
-
-      players.value.push({
-        id: newId,
-        player_id: newId,
-        name: newId,
-        username: newId,
-        isHost: false,
-        is_host: false,
-        ready: false,
-        connected: true,
-        alive: true,
-        role: null,
-      })
-      syncRoleSetup()
-    })
-
-    const handleReadyChanged = (message) => {
-      const payload = extractPayload(message)
-
-      if (Array.isArray(payload.players)) {
-        players.value = parsePlayers(payload.players, {
-          ready_player_ids: payload.ready_player_ids,
-          host_id: hostIdFromPlayers(),
-        })
-        return
-      }
-
-      if (Array.isArray(payload.ready_player_ids)) {
-        updateReadyStatesFromIds(payload.ready_player_ids)
-        return
-      }
-
-      const targetId = payload.client_id
-      const isReady = payload.ready === true
-      players.value = players.value.map((player) => {
-        if (playerIdOf(player) !== targetId || player.is_host || player.isHost) return player
-        return { ...player, ready: isReady }
-      })
-    }
-
-    on('lobby:player_ready_changed', handleReadyChanged)
-    on('player_ready', handleReadyChanged)
-
-    on('lobby:settings_updated', (message) => {
-      const payload = extractPayload(message)
-      applyRoleSetup(payload)
-    })
-
-    on('role_setup_updated', (message) => {
-      const payload = extractPayload(message)
-      applyRoleSetup(payload.role_setup ?? payload)
     })
 
     on('player_left', (message) => {
       const payload = extractPayload(message)
-      if (Array.isArray(payload.players)) {
-        players.value = parsePlayers(payload.players, {
-          host_id: hostIdFromPlayers(),
-        })
-        syncRoleSetup()
-        return
+      console.log('[Lobby] player_left:', payload)
+      if (payload.players) {
+        players.value = [...payload.players]
       }
+    })
 
-      const leftId = payload.client_id
-      players.value = players.value.filter((player) => playerIdOf(player) !== leftId)
-      syncRoleSetup()
+    const handleReady = (message) => {
+      const payload = extractPayload(message)
+      if (payload.players) {
+        players.value = [...payload.players]
+      }
+    }
+    on('player_ready', handleReady)
+    on('lobby:player_ready_changed', handleReady)
+
+    const handleSettings = (message) => {
+      const payload = extractPayload(message)
+      const setup = payload.role_setup || payload
+      if (setup.wolves !== undefined || setup.wolf_count !== undefined) {
+        roleSetup.value.wolves = setup.wolves ?? setup.wolf_count
+      }
+      if (setup.seers !== undefined || setup.seer_count !== undefined) {
+        roleSetup.value.seers = setup.seers ?? setup.seer_count
+      }
+    }
+    on('role_setup_updated', handleSettings)
+    on('lobby:settings_updated', handleSettings)
+
+    on('room_closed', () => {
+      error.value = "L'host ha chiuso la lobby."
     })
   }
 
@@ -280,8 +290,6 @@ export const useLobbyStore = defineStore('lobby', () => {
 
       sessionStorage.setItem('client_id', playerName)
       sessionStorage.setItem('room_id', code)
-      localStorage.setItem('client_id', playerName)
-      localStorage.setItem('room_id', code)
 
       lobbyCode.value = code
       currentPlayerId.value = playerName
@@ -309,13 +317,14 @@ export const useLobbyStore = defineStore('lobby', () => {
     isLoading.value = true
     error.value = null
     try {
-      sessionStorage.setItem('client_id', playerName)
-      sessionStorage.setItem('room_id', code)
-      localStorage.setItem('client_id', playerName)
-      localStorage.setItem('room_id', code)
+      const safeCode = code.trim().toUpperCase()
+      const safeName = playerName.trim()
+      
+      sessionStorage.setItem('client_id', safeName)
+      sessionStorage.setItem('room_id', safeCode)
 
-      lobbyCode.value = code
-      currentPlayerId.value = playerName
+      lobbyCode.value = safeCode
+      currentPlayerId.value = safeName
     } catch (err) {
       error.value = err.message
       console.error('[LobbyStore] Errore durante joinLobby:', err)
@@ -331,10 +340,21 @@ export const useLobbyStore = defineStore('lobby', () => {
 
   function startGame() {
     if (!isHost.value) return
-    emit('lobby:start_game', {
-      lobby_code: lobbyCode.value,
-      role_setup: syncRoleSetup(),
+
+    // 1. Assicuriamoci che il backend abbia i ruoli salvati prima di partire
+    const finalSetup = syncRoleSetup()
+    emit('lobby:update_settings', {
+      wolf_count: finalSetup.wolves,
+      seer_count: finalSetup.seers,
     })
+
+    // 2. Diamo una frazione di secondo (100ms) al database Redis per 
+    // memorizzare i lupi, e poi diamo il segnale di inizio partita!
+    setTimeout(() => {
+      emit('lobby:start_game', {
+        lobby_code: lobbyCode.value,
+      })
+    }, 100)
   }
 
   function kickPlayer(targetId) {
@@ -347,6 +367,8 @@ export const useLobbyStore = defineStore('lobby', () => {
     players.value = []
     currentPlayerId.value = null
     roleSetup.value = { wolves: 1, seers: 1 }
+    hostPlayerId.value = null
+    readyPlayerIds.value = []
     listenersBound.value = false
     error.value = null
   }
@@ -368,6 +390,7 @@ export const useLobbyStore = defineStore('lobby', () => {
     isCurrentPlayerReady,
     allReady,
     readyCount,
+    readyProgress,
     roleSummary,
     maxWolves,
     maxSeers,

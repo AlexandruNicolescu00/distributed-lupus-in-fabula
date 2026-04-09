@@ -107,6 +107,29 @@ describe('lobbyStore - lobby integration payloads', () => {
     expect(lobby.roleSetup).toEqual({ wolves: 2, seers: 1 })
   })
 
+  it('prefers explicit host flags over stale host_id snapshots', () => {
+    const lobby = useLobbyStore()
+    lobby.currentPlayerId = 'guest1'
+    lobby.listenToLobbyEvents()
+
+    const syncHandler = socketMock.on.mock.calls.find(([event]) => event === 'game_state_sync')[1]
+    syncHandler({
+      payload: {
+        state: {
+          host_id: 'old-host',
+          ready_player_ids: ['guest1'],
+        },
+        players: [
+          { player_id: 'guest1', username: 'Bob', connected: true, is_host: true, ready: true },
+          { player_id: 'guest2', username: 'Carol', connected: true, is_host: false, ready: false },
+        ],
+      },
+    })
+
+    expect(lobby.players[0].isHost).toBe(true)
+    expect(lobby.isHost).toBe(true)
+  })
+
   it('updates ready states from lobby:player_ready_changed payload', () => {
     const lobby = useLobbyStore()
     lobby.players = [
@@ -129,6 +152,41 @@ describe('lobbyStore - lobby integration payloads', () => {
     expect(lobby.players[2].ready).toBe(true)
   })
 
+  it('preserves ready players across player_joined payload refreshes', () => {
+    const lobby = useLobbyStore()
+    lobby.currentPlayerId = 'host1'
+    lobby.listenToLobbyEvents()
+
+    const syncHandler = socketMock.on.mock.calls.find(([event]) => event === 'game_state_sync')[1]
+    syncHandler({
+      payload: {
+        state: {
+          host_id: 'host1',
+          ready_player_ids: ['host1', 'guest1'],
+        },
+        players: [
+          { player_id: 'host1', username: 'Alice', connected: true },
+          { player_id: 'guest1', username: 'Bob', connected: true },
+        ],
+      },
+    })
+
+    const joinedHandler = socketMock.on.mock.calls.find(([event]) => event === 'player_joined')[1]
+    joinedHandler({
+      payload: {
+        players: [
+          { player_id: 'host1', username: 'Alice', connected: true },
+          { player_id: 'guest1', username: 'Bob', connected: true },
+          { player_id: 'guest2', username: 'Carol', connected: true },
+        ],
+      },
+    })
+
+    expect(lobby.players[1].ready).toBe(true)
+    expect(lobby.readyCount).toBe(1)
+    expect(lobby.readyProgress).toBe(50)
+  })
+
   it('emits canonical lobby events for ready and settings updates', () => {
     const lobby = useLobbyStore()
     lobby.players = [
@@ -149,6 +207,23 @@ describe('lobbyStore - lobby integration payloads', () => {
       wolf_count: 1,
       seer_count: 1,
     })
+  })
+
+  it('updates ready state optimistically before server confirmation', () => {
+    const lobby = useLobbyStore()
+    lobby.players = [
+      { player_id: 'host1', isHost: true, is_host: true, ready: true },
+      { player_id: 'guest1', isHost: false, is_host: false, ready: false },
+      { player_id: 'guest2', isHost: false, is_host: false, ready: false },
+    ]
+    lobby.currentPlayerId = 'guest1'
+
+    lobby.toggleReady()
+
+    expect(lobby.players[1].ready).toBe(true)
+    expect(lobby.readyCount).toBe(1)
+    expect(lobby.readyProgress).toBe(50)
+    expect(socketMock.emit).toHaveBeenCalledWith('lobby:player_ready', { ready: true })
   })
 })
 

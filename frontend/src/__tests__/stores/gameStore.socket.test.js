@@ -58,7 +58,7 @@ describe('gameStore - socket events', () => {
 
     socketHandlers.game_start?.({})
 
-    expect(game.phase).toBe(PHASES.DAY)
+    expect(game.phase).toBe(PHASES.NIGHT)
   })
 
   it('phase_changed reads the backend payload wrapper', () => {
@@ -91,5 +91,24 @@ describe('gameStore - socket events', () => {
 
     expect(game.myRole).toBe('WOLF')
     expect(game.wolfCompanions).toEqual([{ player_id: 'p2', username: 'Bob' }])
+  })
+
+  it('handleStateSync keeps roles hidden until the backend assigns my role', () => {
+    const game = useGameStore()
+    game.currentPlayerId = 'p1'
+
+    game.handleStateSync({
+      payload: {
+        state: { phase: PHASES.NIGHT, round: 0, host_id: 'p1' },
+        players: [
+          { player_id: 'p1', username: 'Alice', connected: true, role: null },
+          { player_id: 'p2', username: 'Bob', connected: true, role: null },
+        ],
+      },
+    })
+
+    expect(game.players[0].role).toBeNull()
+    expect(game.players[1].role).toBeNull()
+    expect(game.myRole).toBeNull()
   })
 })
