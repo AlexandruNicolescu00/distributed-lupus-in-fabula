@@ -6,7 +6,7 @@ let socket = null
 const pendingListeners = new Map()
 
 function getStoredValue(key) {
-  return sessionStorage.getItem(key) || localStorage.getItem(key)
+  return localStorage.getItem(key)
 }
 
 function bindPendingListeners() {

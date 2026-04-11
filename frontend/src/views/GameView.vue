@@ -24,17 +24,19 @@ const nightActionDone = ref(false)
 const showNightOverlay = ref(false)
 const showRoomClosedPopup = ref(false)
 const lobbyCode = route.params.id || lobby.lobbyCode
+const isCurrentUserHost = computed(() =>
+  lobby.isHost || (game.hostId && game.hostId === game.currentPlayerId)
+)
 
 onMounted(async () => {
   if (!lobbyCode) {
     router.push('/')
     return
   }
-
+ 
   game.listenToGameEvents()
   chat.listenToMessages()
 
-  // FIX: Solo sessionStorage per evitare conflitti tra tab (il localStorage rompe il testing)
   let clientId = sessionStorage.getItem('client_id')
   if (!clientId) {
     clientId = `user_${Math.random().toString(36).slice(2, 11)}`
@@ -43,7 +45,8 @@ onMounted(async () => {
 
   game.currentPlayerId = clientId
   
-  // FIX: Facciamo il bootstrap SOLO se i giocatori non ci sono già (evita reset ruoli segreti all'ingresso)
+  // FIX 1: Facciamo il bootstrap SOLO se il gameStore è vuoto (es. hai premuto F5). 
+  // Altrimenti distruggiamo i dati freschi (come i ruoli) appena arrivati dal backend!
   if (game.players.length === 0) {
     game.bootstrapFromLobby(lobby.players, clientId, lobby.roleSummary, lobbyCode)
   }
@@ -90,7 +93,7 @@ watch(
   (closedAt) => {
     if (!closedAt) return
 
-    if (lobby.isHost) {
+    if (isCurrentUserHost.value) {
       game.reset()
       lobby.reset()
       chat.reset()
@@ -129,8 +132,10 @@ const roleLabel = computed(() => {
     [ROLES.WOLF]: { icon: '🐺', name: 'Lupo', desc: 'Elimina i villici e resta nascosto.' },
     [ROLES.SEER]: { icon: '🔮', name: 'Veggente', desc: 'Scopri chi sono i lupi.' },
   }
-  // FIX: Normalizzazione a maiuscolo altrimenti mostra sempre "In attesa"
+  // FIX 2: Il backend manda "wolf" in minuscolo, il frontend usa "WOLF". 
+  // Trasformiamo in maiuscolo per evitare il fallback all'infinito!
   const normalizedRole = game.myRole ? game.myRole.toUpperCase() : null
+  
   return map[normalizedRole] ?? { icon: '❓', name: 'In attesa', desc: 'Il tuo ruolo verrà rivelato presto.' }
 })
 
@@ -188,11 +193,8 @@ function initials(name) {
 }
 
 function leaveGame() {
-  if (lobby.isHost) {
-    emit('room_closed', {
-      lobby_code: lobbyCode,
-      reason: "L'host ha chiuso la partita.",
-    })
+  if (isCurrentUserHost.value) {
+    game.emitRoomClosed(lobbyCode)
     return
   }
 
@@ -394,7 +396,7 @@ function handleRoomClosedConfirm() {
         </div>
 
         <button class="leave-game-btn leave-game-btn--sidebar" @click="leaveGame">
-          {{ lobby.isHost ? 'Chiudi Partita' : 'Abbandona Partita' }}
+          {{ isCurrentUserHost ? 'Chiudi Partita' : 'Abbandona Partita' }}
         </button>
       </aside>
     </div>

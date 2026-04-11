@@ -61,6 +61,40 @@ async def mark_player_disconnected(
         await rs.patch_game_state(redis, room_id, ready_player_ids=sorted(ready_player_ids))
 
 
+async def promote_host_if_needed(
+    redis: aioredis.Redis,
+    room_id: str,
+    players_snapshot: list[dict],
+) -> str | None:
+    state = await rs.get_game_state(redis, room_id) or {}
+    current_host_id = state.get("host_id")
+
+    if not players_snapshot:
+        await rs.patch_game_state(redis, room_id, host_id=None, ready_player_ids=[])
+        return None
+
+    remaining_ids = [player.get("player_id") for player in players_snapshot if player.get("player_id")]
+    if current_host_id in remaining_ids:
+        return current_host_id
+
+    promoted_host_id = players_snapshot[0].get("player_id")
+    if not promoted_host_id:
+        return None
+
+    ready_player_ids = set(state.get("ready_player_ids", []))
+    if current_host_id:
+        ready_player_ids.discard(current_host_id)
+    ready_player_ids.add(promoted_host_id)
+
+    await rs.patch_game_state(
+        redis,
+        room_id,
+        host_id=promoted_host_id,
+        ready_player_ids=sorted(ready_player_ids),
+    )
+    return promoted_host_id
+
+
 async def get_player(
     redis: aioredis.Redis,
     room_id: str,
@@ -72,23 +106,29 @@ async def get_player(
 async def build_room_snapshot(redis: aioredis.Redis, room_id: str) -> dict:
     state = await rs.get_game_state(redis, room_id) or {}
     players = await rs.get_all_players(redis, room_id)
+    host_id = state.get("host_id")
+    ready_player_ids = state.get("ready_player_ids", [])
+    phase = state.get("phase", Phase.LOBBY.value)
+    reveal_roles = phase == Phase.ENDED.value
     return {
-        "phase": state.get("phase", Phase.LOBBY.value),
+        "phase": phase,
         "round": state.get("round", 0),
         "winner": state.get("winner"),
         "timer_end": state.get("timer_end"),
         "paused": state.get("paused", False),
         "wolf_count": state.get("wolf_count"),
         "seer_count": state.get("seer_count"),
-        "host_id": state.get("host_id"),
-        "ready_player_ids": state.get("ready_player_ids", []),
+        "host_id": host_id,
+        "ready_player_ids": ready_player_ids,
         "players": [
             {
                 "player_id": p.player_id,
                 "username": p.username,
-                "role": p.role.value if p.role else None,
+                "role": p.role.value if reveal_roles and p.role else None,
                 "alive": p.alive,
                 "connected": p.connected,
+                "is_host": p.player_id == host_id,
+                "ready": p.player_id == host_id or p.player_id in ready_player_ids,
             }
             for p in players.values()
         ],
@@ -206,9 +246,4 @@ async def maybe_close_room_for_departing_host(
     room_id: str,
     client_id: str,
 ) -> RoomClosedPayload | None:
-    state = await rs.get_game_state(redis, room_id) or {}
-    if state.get("phase", Phase.LOBBY.value) != Phase.LOBBY.value:
-        return None
-    if state.get("host_id") != client_id:
-        return None
-    return RoomClosedPayload(reason="host_disconnected", host_id=client_id)
+    return None

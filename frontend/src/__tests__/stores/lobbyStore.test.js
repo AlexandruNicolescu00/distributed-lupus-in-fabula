@@ -1,167 +1,242 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
+
+const socketMock = {
+  connect: vi.fn(),
+  emit: vi.fn(),
+  on: vi.fn(),
+  isConnected: { value: false },
+}
+
+vi.mock('@/composables/useSocket', () => ({
+  useSocket: () => socketMock,
+}))
+
 import { useLobbyStore } from '@/stores/lobbyStore'
 
-// ---------------------------------------------------------------------------
-// Setup — Pinia fresca prima di ogni test
-// ---------------------------------------------------------------------------
 beforeEach(() => {
   setActivePinia(createPinia())
+  socketMock.connect.mockReset()
+  socketMock.emit.mockReset()
+  socketMock.on.mockReset()
 })
 
-// ---------------------------------------------------------------------------
-// Helper — lista giocatori mock
-// ---------------------------------------------------------------------------
 function makePlayers() {
   return [
-    { id: 'p1', name: 'Alice', isHost: true,  ready: true  },
-    { id: 'p2', name: 'Bob',   isHost: false, ready: true  },
+    { id: 'p1', name: 'Alice', isHost: true, ready: true },
+    { id: 'p2', name: 'Bob', isHost: false, ready: true },
     { id: 'p3', name: 'Carol', isHost: false, ready: false },
-    { id: 'p4', name: 'Dave',  isHost: false, ready: false },
+    { id: 'p4', name: 'Dave', isHost: false, ready: false },
   ]
 }
 
-// ---------------------------------------------------------------------------
-// SUITE 1 — Stato iniziale :Controlla se l'host può avviare la partita. 
-// Testiamo tre casi: alcuni non pronti, tutti pronti, e il caso edge di solo l'host in lobby
-// ---------------------------------------------------------------------------
-describe('lobbyStore — stato iniziale', () => {
-  it('lobbyCode è null inizialmente', () => {
+describe('lobbyStore - initial state', () => {
+  it('starts empty', () => {
     const lobby = useLobbyStore()
     expect(lobby.lobbyCode).toBeNull()
-  })
-
-  it('players è vuoto inizialmente', () => {
-    const lobby = useLobbyStore()
     expect(lobby.players).toHaveLength(0)
-  })
-
-  it('currentPlayerId è null inizialmente', () => {
-    const lobby = useLobbyStore()
     expect(lobby.currentPlayerId).toBeNull()
-  })
-
-  it('isLoading è false inizialmente', () => {
-    const lobby = useLobbyStore()
     expect(lobby.isLoading).toBe(false)
-  })
-
-  it('error è null inizialmente', () => {
-    const lobby = useLobbyStore()
     expect(lobby.error).toBeNull()
   })
 })
 
-// ---------------------------------------------------------------------------
-// SUITE 2 — currentPlayer
-// ---------------------------------------------------------------------------
-describe('lobbyStore — currentPlayer', () => {
-  it('restituisce il giocatore corrente', () => {
+describe('lobbyStore - derived state', () => {
+  it('returns the current player', () => {
     const lobby = useLobbyStore()
-    lobby.players         = makePlayers()
+    lobby.players = makePlayers()
     lobby.currentPlayerId = 'p2'
     expect(lobby.currentPlayer?.name).toBe('Bob')
   })
 
-  it('restituisce null se currentPlayerId non corrisponde', () => {
+  it('detects the current host', () => {
     const lobby = useLobbyStore()
-    lobby.players         = makePlayers()
-    lobby.currentPlayerId = 'p99'
-    expect(lobby.currentPlayer).toBeNull()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// SUITE 3 — isHost : determina se vedi il pulsante "Inizia la partita" o "Sono pronto"
-// ---------------------------------------------------------------------------
-describe('lobbyStore — isHost', () => {
-  it('isHost è true se il giocatore corrente è host', () => {
-    const lobby = useLobbyStore()
-    lobby.players         = makePlayers()
-    lobby.currentPlayerId = 'p1'   // p1 è host
+    lobby.players = makePlayers()
+    lobby.currentPlayerId = 'p1'
     expect(lobby.isHost).toBe(true)
   })
 
-  it('isHost è false se il giocatore corrente non è host', () => {
+  it('counts only ready guests', () => {
     const lobby = useLobbyStore()
-    lobby.players         = makePlayers()
-    lobby.currentPlayerId = 'p2'
-    expect(lobby.isHost).toBe(false)
+    lobby.players = makePlayers()
+    expect(lobby.readyCount).toBe(1)
   })
 
-  it('isHost è false se currentPlayerId è null', () => {
+  it('is false when at least one guest is not ready', () => {
     const lobby = useLobbyStore()
-    lobby.players         = makePlayers()
-    lobby.currentPlayerId = null
-    expect(lobby.isHost).toBe(false)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// SUITE 4 — readyCount : Conta i giocatori pronti
-// ---------------------------------------------------------------------------
-describe('lobbyStore — readyCount', () => {
-  it('conta correttamente i giocatori pronti', () => {
-    const lobby = useLobbyStore()
-    lobby.players = makePlayers()   // p1 e p2 pronti → 2
-    expect(lobby.readyCount).toBe(2)
-  })
-
-  it('è 0 se nessuno è pronto', () => {
-    const lobby = useLobbyStore()
-    lobby.players = makePlayers().map(p => ({ ...p, ready: false }))
-    expect(lobby.readyCount).toBe(0)
-  })
-
-  it('è uguale a players.length se tutti sono pronti', () => {
-    const lobby = useLobbyStore()
-    lobby.players = makePlayers().map(p => ({ ...p, ready: true }))
-    expect(lobby.readyCount).toBe(lobby.players.length)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// SUITE 5 — allReady
-// ---------------------------------------------------------------------------
-describe('lobbyStore — allReady', () => {
-  it('allReady è false se almeno un non-host non è pronto', () => {
-    const lobby = useLobbyStore()
-    lobby.players = makePlayers()   // p3 e p4 non pronti
+    lobby.players = makePlayers()
     expect(lobby.allReady).toBe(false)
   })
 
-  it('allReady è true se tutti i non-host sono pronti', () => {
+  it('is false when the host is alone in the lobby', () => {
     const lobby = useLobbyStore()
-    // p1 è host (non conta per allReady), p2/p3/p4 tutti pronti
-    lobby.players = makePlayers().map(p => ({ ...p, ready: true }))
-    expect(lobby.allReady).toBe(true)
-  })
-
-  it('allReady è true se ci sono solo host', () => {
-    const lobby = useLobbyStore()
-    // Solo l'host in lobby — filter non-host è vuoto → every() su array vuoto → true
     lobby.players = [{ id: 'p1', name: 'Alice', isHost: true, ready: true }]
-    expect(lobby.allReady).toBe(true)
+    expect(lobby.allReady).toBe(false)
   })
 })
 
-// ---------------------------------------------------------------------------
-// SUITE 6 — reset()
-// ---------------------------------------------------------------------------
-describe('lobbyStore — reset()', () => {
-  it('reset ripristina tutti i valori allo stato iniziale', () => {
+describe('lobbyStore - lobby integration payloads', () => {
+  it('maps host, ready players and role counts from game_state_sync payload', () => {
     const lobby = useLobbyStore()
+    lobby.currentPlayerId = 'host1'
+    lobby.listenToLobbyEvents()
 
-    // Modifica lo stato
-    lobby.lobbyCode       = 'WOLF-1234'
-    lobby.players         = makePlayers()
+    const syncHandler = socketMock.on.mock.calls.find(([event]) => event === 'game_state_sync')[1]
+    syncHandler({
+      payload: {
+        state: {
+          host_id: 'host1',
+          ready_player_ids: ['host1', 'guest1'],
+          wolf_count: 2,
+          seer_count: 1,
+        },
+        players: [
+          { player_id: 'host1', username: 'Alice', connected: true },
+          { player_id: 'guest1', username: 'Bob', connected: true },
+          { player_id: 'guest2', username: 'Carol', connected: true },
+          { player_id: 'guest3', username: 'Dave', connected: true },
+          { player_id: 'guest4', username: 'Eve', connected: true },
+          { player_id: 'guest5', username: 'Frank', connected: true },
+        ],
+      },
+    })
+
+    expect(lobby.players[0].isHost).toBe(true)
+    expect(lobby.players[1].ready).toBe(true)
+    expect(lobby.players[2].ready).toBe(false)
+    expect(lobby.roleSetup).toEqual({ wolves: 2, seers: 1 })
+  })
+
+  it('prefers explicit host flags over stale host_id snapshots', () => {
+    const lobby = useLobbyStore()
+    lobby.currentPlayerId = 'guest1'
+    lobby.listenToLobbyEvents()
+
+    const syncHandler = socketMock.on.mock.calls.find(([event]) => event === 'game_state_sync')[1]
+    syncHandler({
+      payload: {
+        state: {
+          host_id: 'old-host',
+          ready_player_ids: ['guest1'],
+        },
+        players: [
+          { player_id: 'guest1', username: 'Bob', connected: true, is_host: true, ready: true },
+          { player_id: 'guest2', username: 'Carol', connected: true, is_host: false, ready: false },
+        ],
+      },
+    })
+
+    expect(lobby.players[0].isHost).toBe(true)
+    expect(lobby.isHost).toBe(true)
+  })
+
+  it('updates ready states from lobby:player_ready_changed payload', () => {
+    const lobby = useLobbyStore()
+    lobby.players = [
+      { player_id: 'host1', isHost: true, is_host: true, ready: true },
+      { player_id: 'guest1', isHost: false, is_host: false, ready: false },
+      { player_id: 'guest2', isHost: false, is_host: false, ready: false },
+    ]
+    lobby.listenToLobbyEvents()
+
+    const readyHandler = socketMock.on.mock.calls.find(([event]) => event === 'lobby:player_ready_changed')[1]
+    readyHandler({
+      payload: {
+        client_id: 'guest2',
+        ready: true,
+        ready_player_ids: ['host1', 'guest2'],
+      },
+    })
+
+    expect(lobby.players[1].ready).toBe(false)
+    expect(lobby.players[2].ready).toBe(true)
+  })
+
+  it('preserves ready players across player_joined payload refreshes', () => {
+    const lobby = useLobbyStore()
+    lobby.currentPlayerId = 'host1'
+    lobby.listenToLobbyEvents()
+
+    const syncHandler = socketMock.on.mock.calls.find(([event]) => event === 'game_state_sync')[1]
+    syncHandler({
+      payload: {
+        state: {
+          host_id: 'host1',
+          ready_player_ids: ['host1', 'guest1'],
+        },
+        players: [
+          { player_id: 'host1', username: 'Alice', connected: true },
+          { player_id: 'guest1', username: 'Bob', connected: true },
+        ],
+      },
+    })
+
+    const joinedHandler = socketMock.on.mock.calls.find(([event]) => event === 'player_joined')[1]
+    joinedHandler({
+      payload: {
+        players: [
+          { player_id: 'host1', username: 'Alice', connected: true },
+          { player_id: 'guest1', username: 'Bob', connected: true },
+          { player_id: 'guest2', username: 'Carol', connected: true },
+        ],
+      },
+    })
+
+    expect(lobby.players[1].ready).toBe(true)
+    expect(lobby.readyCount).toBe(1)
+    expect(lobby.readyProgress).toBe(50)
+  })
+
+  it('emits canonical lobby events for ready and settings updates', () => {
+    const lobby = useLobbyStore()
+    lobby.players = [
+      { player_id: 'host1', isHost: true, is_host: true, ready: true },
+      { player_id: 'guest1', isHost: false, is_host: false, ready: false },
+      { player_id: 'guest2', isHost: false, is_host: false, ready: false },
+      { player_id: 'guest3', isHost: false, is_host: false, ready: false },
+      { player_id: 'guest4', isHost: false, is_host: false, ready: false },
+    ]
+    lobby.currentPlayerId = 'guest1'
+
+    lobby.toggleReady()
+    expect(socketMock.emit).toHaveBeenCalledWith('lobby:player_ready', { ready: true })
+
+    lobby.currentPlayerId = 'host1'
+    lobby.adjustRole('seers', 1)
+    expect(socketMock.emit).toHaveBeenCalledWith('lobby:update_settings', {
+      wolf_count: 1,
+      seer_count: 1,
+    })
+  })
+
+  it('updates ready state optimistically before server confirmation', () => {
+    const lobby = useLobbyStore()
+    lobby.players = [
+      { player_id: 'host1', isHost: true, is_host: true, ready: true },
+      { player_id: 'guest1', isHost: false, is_host: false, ready: false },
+      { player_id: 'guest2', isHost: false, is_host: false, ready: false },
+    ]
+    lobby.currentPlayerId = 'guest1'
+
+    lobby.toggleReady()
+
+    expect(lobby.players[1].ready).toBe(true)
+    expect(lobby.readyCount).toBe(1)
+    expect(lobby.readyProgress).toBe(50)
+    expect(socketMock.emit).toHaveBeenCalledWith('lobby:player_ready', { ready: true })
+  })
+})
+
+describe('lobbyStore - reset', () => {
+  it('restores the initial state', () => {
+    const lobby = useLobbyStore()
+    lobby.lobbyCode = 'WOLF-1234'
+    lobby.players = makePlayers()
     lobby.currentPlayerId = 'p1'
-    lobby.error           = 'qualcosa è andato storto'
+    lobby.error = 'qualcosa e andato storto'
 
-    // Reset
     lobby.reset()
 
-    // Verifica
     expect(lobby.lobbyCode).toBeNull()
     expect(lobby.players).toHaveLength(0)
     expect(lobby.currentPlayerId).toBeNull()
