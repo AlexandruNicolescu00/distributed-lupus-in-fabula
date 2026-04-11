@@ -2,254 +2,291 @@
 services/game_runtime.py
 
 Manages the background tasks and timer loop for an active game room.
-
-Responsibilities:
-  - Phase auto-advance (the timer loop)
-  - Delegating logic to game_logic.py
-  - Emitting Socket.IO events to clients based on logic results
-  - Checking win conditions and broadcasting game_ended
 """
 
-import asyncio
-import logging
-import time
+from typing import Any, Awaitable, Callable
 
 from core import state_store as rs
+from core.messages import EventType
 from models.events import (
-    SeerResultPayload,
-    PlayerKilledPayload,
     GameEndedPayload,
-    VoteUpdatePayload,
+    PlayerKilledPayload,
+    SeerActionAcceptedPayload,
+    SeerResultPayload,
+    WolfVoteAcceptedPayload,
 )
-from models.game import Phase
-from pubsub.manager import PubSubManager
-from services import game_logic
-
-logger = logging.getLogger(__name__)
+from models.game import Phase, Role
+from services.game_logic import (
+    advance_phase,
+    assign_roles,
+    build_phase_changed_payload,
+    build_role_payloads,
+    cast_vote,
+    record_seer_action,
+    record_wolf_vote,
+    set_phase,
+)
+from services.lobby_logic import player_payload
 
 
 class GameRuntime:
-    def __init__(self, room_id: str, pubsub: PubSubManager, get_redis=None):
-        self.room_id = room_id
-        self.pubsub = pubsub
-        self.r = pubsub.r
-        self.get_redis = get_redis
-        self._task: asyncio.Task | None = None
-        self._running = False
-        self._loop_trigger = asyncio.Event()
+    def __init__(
+        self,
+        *,
+        get_redis: Callable[[], Any],
+        connection_manager: Any,
+        emit_authoritative_event: Callable[..., Awaitable[None]],
+        sync_room_state: Callable[[str], Awaitable[dict]],
+        schedule_phase_timer: Callable[[str, float | None], None],
+        cancel_phase_timer: Callable[[str], None],
+        **kwargs # Accetta eventuali altri parametri imprevisti da main.py
+    ) -> None:
+        self._get_redis = get_redis
+        self._connection_manager = connection_manager
+        self._emit_authoritative_event = emit_authoritative_event
+        self._sync_room_state = sync_room_state
+        self._schedule_phase_timer = schedule_phase_timer
+        self._cancel_phase_timer = cancel_phase_timer
 
-    # ── Lifecycle ────────────────────────────────────────────────────────────
-
-    async def start(self) -> None:
-        """Starts the game loop."""
-        if self._running:
-            return
-        self._running = True
-        self._task = asyncio.create_task(self._loop(), name=f"game_loop_{self.room_id}")
-        logger.info("Game loop started | room=%s", self.room_id)
-
-    async def stop(self) -> None:
-        """Stops the game loop immediately."""
-        self._running = False
-        self._loop_trigger.set()
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        logger.info("Game loop stopped | room=%s", self.room_id)
-
-    def _trigger_advance(self) -> None:
-        """Wakes up the loop immediately (used to skip timer when everyone voted)."""
-        self._loop_trigger.set()
-
-    # ── The Timer Loop ────────────────────────────────────────────────────────
-
-    async def _loop(self) -> None:
-        """
-        Background loop: wakes up when timer_end expires or when explicitly triggered.
-        Calls game_logic.advance_phase() and emits the results.
-        """
-        while self._running:
-            try:
-                state = await rs.get_game_state(self.r, self.room_id)
-                if not state:
-                    logger.warning("Game state missing, stopping loop | room=%s", self.room_id)
-                    await self.stop()
-                    break
-
-                phase = Phase(state["phase"])
-                
-                # If phase is LOBBY or ENDED, we don't have an active timer loop
-                if phase in (Phase.LOBBY, Phase.ENDED):
-                    # Sleep long, wait for manual trigger or stop
-                    self._loop_trigger.clear()
-                    await asyncio.wait_for(self._loop_trigger.wait(), timeout=86400)
-                    continue
-
-                timer_end = state.get("timer_end")
-
-                # If no timer is set but phase is active, emergency advance
-                if not timer_end:
-                    logger.warning("Active phase %s with no timer_end | room=%s", phase, self.room_id)
-                    await self._advance()
-                    continue
-
-                now = time.time()
-                time_to_wait = timer_end - now
-
-                if time_to_wait > 0:
-                    self._loop_trigger.clear()
-                    try:
-                        # Wait until timer expires OR we get an explicit _trigger_advance()
-                        await asyncio.wait_for(self._loop_trigger.wait(), timeout=time_to_wait)
-                    except asyncio.TimeoutError:
-                        # Timer naturally expired
-                        pass
-
-                # If we get here (either timeout expired or triggered early) -> advance phase
-                if self._running:
-                    await self._advance()
-
-            except asyncio.CancelledError:
-                logger.info("Game loop cancelled | room=%s", self.room_id)
-                break
-            except Exception as e:
-                logger.exception("Error in game loop | room=%s error=%s", self.room_id, e)
-                await asyncio.sleep(5)  # Backoff on error
-
-    async def _advance(self) -> None:
-        """Calls game_logic.advance_phase and broadcasts all relevant events."""
-        try:
-            res = await game_logic.advance_phase(self.r, self.room_id)
-        except Exception as e:
-            logger.exception("Error advancing phase | room=%s error=%s", self.room_id, e)
-            return
-
-        winner = res.get("winner")
-
-        # 1. Handle Night result events
-        night_result = res.get("night_result")
-        if night_result:
-            killed_id = night_result.get("killed_player_id")
-            seer_target_id = night_result.get("seer_target_id")
-            seer_target_role = night_result.get("seer_target_role")
-
-            if killed_id:
-                # Tell everyone who died
-                payload = PlayerKilledPayload(player_id=killed_id)
-                await self.pubsub.emit_to_room(self.room_id, "player_killed", payload.model_dump())
-
-            if seer_target_id and seer_target_role:
-                # Find who the seer is and tell ONLY them the result
-                players = await rs.get_all_players(self.r, self.room_id)
-                seer_id = next((pid for pid, p in players.items() if p.role and p.role.value == "seer"), None)
-                if seer_id:
-                    target_name = players[seer_target_id].username
-                    seer_payload = SeerResultPayload(
-                        target_id=seer_target_id,
-                        target_name=target_name,
-                        role=seer_target_role,
-                    )
-                    await self.pubsub.emit_to_user(self.room_id, seer_id, "seer_result", seer_payload.model_dump())
-
-        # 2. Handle Voting result events
-        elim_payload = res.get("eliminated_player")
-        if elim_payload:
-            await self.pubsub.emit_to_room(self.room_id, "player_eliminated", elim_payload.model_dump())
-
-        no_elim_payload = res.get("no_elimination")
-        if no_elim_payload:
-            await self.pubsub.emit_to_room(self.room_id, "no_elimination", no_elim_payload.model_dump())
-
-        # 3. Handle Winner / Phase Change
-        if winner:
-            await self.pubsub.emit_to_room(
-                self.room_id,
-                "game_ended",
-                GameEndedPayload(
-                    winner=winner.value,
-                    round=res["round"],
-                    players=res.get("final_players", []),
-                ).model_dump(),
+    async def _emit_role_assignments(self, room_id: str, payloads: dict[str, Any]) -> None:
+        for client_id, payload in payloads.items():
+            sid = self._connection_manager.get_sid(room_id, client_id)
+            if sid is None:
+                continue
+            await self._emit_authoritative_event(
+                EventType.ROLE_ASSIGNED,
+                room_id,
+                payload,
+                to=sid,
+                publish=False,
             )
-            await self.stop()
-        else:
-            # Broadcast the new phase
-            next_phase = res["next_phase"]
-            if next_phase:
-                payload = game_logic.build_phase_changed_payload(
-                    next_phase,
-                    res["round"],
-                    res["timer_end"],
+
+    async def emit_role_assignment_for_player(self, room_id: str, client_id: str, sid: str) -> None:
+        redis = self._get_redis()
+        player = await rs.get_player(redis, room_id, client_id)
+        if player is None or player.role is None:
+            return
+
+        all_players = await rs.get_all_players(redis, room_id)
+        assignment = {
+            player_id: current_player.role
+            for player_id, current_player in all_players.items()
+            if current_player.role is not None
+        }
+        role_payload = build_role_payloads(assignment, all_players).get(client_id)
+        if role_payload is None:
+            return
+
+        await self._emit_authoritative_event(
+            EventType.ROLE_ASSIGNED,
+            room_id,
+            role_payload,
+            to=sid,
+            publish=False,
+        )
+
+    async def _emit_game_end(self, room_id: str, result: dict[str, Any]) -> None:
+        winner = result.get("winner")
+        payload = GameEndedPayload(
+            winner=winner.value if hasattr(winner, "value") else str(winner),
+            reason="all_wolves_dead" if getattr(winner, "value", str(winner)) == "VILLAGERS" else "wolves_parity",
+            round=result.get("round", 0),
+            players=result.get("final_players", []),
+        )
+        await self._emit_authoritative_event(EventType.GAME_ENDED, room_id, payload)
+
+    async def _emit_night_resolution(self, room_id: str, result: dict[str, Any]) -> None:
+        night_result = result.get("night_result")
+        if not night_result:
+            return
+
+        redis = self._get_redis()
+
+        killed_player_id = night_result.get("killed_player_id")
+        if killed_player_id:
+            victim = await rs.get_player(redis, room_id, killed_player_id)
+            if victim is not None:
+                await self._emit_authoritative_event(
+                    EventType.PLAYER_KILLED,
+                    room_id,
+                    PlayerKilledPayload(
+                        player_id=victim.player_id,
+                        username=victim.username,
+                        player=player_payload(victim, reveal_role=False),
+                    ),
                 )
-                await self.pubsub.emit_to_room(self.room_id, "phase_changed", payload.model_dump())
 
+        seer_target_id = night_result.get("seer_target_id")
+        seer_target_role = night_result.get("seer_target_role")
+        if seer_target_id and seer_target_role:
+            all_players = await rs.get_all_players(redis, room_id)
+            seer = next((p for p in all_players.values() if p.role and p.role.value == "SEER"), None)
+            sid = self._connection_manager.get_sid(room_id, seer.player_id) if seer is not None else None
+            if sid is not None:
+                target = all_players.get(seer_target_id)
+                await self._emit_authoritative_event(
+                    EventType.SEER_RESULT,
+                    room_id,
+                    SeerResultPayload(
+                        target_id=seer_target_id,
+                        target_name=target.username if target else seer_target_id,
+                        role=seer_target_role,
+                    ),
+                    to=sid,
+                    publish=False,
+                )
 
-    # ── Incoming Player Actions ───────────────────────────────────────────────
+    async def _emit_phase_outcome(self, room_id: str, result: dict[str, Any]) -> None:
+        if result.get("eliminated_player") is not None:
+            await self._emit_authoritative_event(
+                EventType.PLAYER_ELIMINATED,
+                room_id,
+                result["eliminated_player"],
+            )
 
-    async def handle_cast_vote(self, voter_id: str, target_id: str) -> None:
-        """Handles a daytime vote and checks if we can skip the timer."""
-        try:
-            update_payload = await game_logic.cast_vote(self.r, self.room_id, voter_id, target_id)
-            await self.pubsub.emit_to_room(self.room_id, "vote_update", update_payload.model_dump())
-            
-            # Check if all alive players have voted -> skip timer
-            players = await rs.get_all_players(self.r, self.room_id)
-            alive_count = sum(1 for p in players.values() if p.alive)
-            votes = await rs.get_votes(self.r, self.room_id)
-            
-            if len(votes) == alive_count:
-                logger.info("All alive players voted. Skipping voting timer | room=%s", self.room_id)
-                self._trigger_advance()
-                
-        except ValueError as e:
-            logger.warning("Invalid vote cast | room=%s voter=%s reason=%s", self.room_id, voter_id, e)
-            await self.pubsub.emit_error(self.room_id, voter_id, str(e))
+        if result.get("no_elimination") is not None:
+            await self._emit_authoritative_event(
+                EventType.NO_ELIMINATION,
+                room_id,
+                result["no_elimination"],
+            )
 
-    async def handle_wolf_vote(self, wolf_id: str, target_id: str) -> None:
-        """Handles a wolf vote and checks if all wolves have voted."""
-        try:
-            await game_logic.record_wolf_vote(self.r, self.room_id, wolf_id, target_id)
-            # Acknowledge the wolf that action was registered (optional frontend trigger)
-            await self.pubsub.emit_to_user(self.room_id, wolf_id, "action_registered", {"action": "wolf_vote"})
-            
-            # Check if night actions are complete
-            await self._check_night_actions_complete()
+        await self._emit_night_resolution(room_id, result)
 
-        except ValueError as e:
-            logger.warning("Invalid wolf vote | room=%s wolf=%s reason=%s", self.room_id, wolf_id, e)
-            await self.pubsub.emit_error(self.room_id, wolf_id, str(e))
+        if result.get("winner") is not None:
+            self._cancel_phase_timer(room_id)
+            await self._emit_game_end(room_id, result)
+            await self._sync_room_state(room_id)
+            return
 
-    async def handle_seer_action(self, seer_id: str, target_id: str) -> None:
-        """Handles the seer action and checks if night actions are complete."""
-        try:
-            await game_logic.record_seer_action(self.r, self.room_id, seer_id, target_id)
-            await self.pubsub.emit_to_user(self.room_id, seer_id, "action_registered", {"action": "seer_action"})
-            
-            # Check if night actions are complete
-            await self._check_night_actions_complete()
-            
-        except ValueError as e:
-            logger.warning("Invalid seer action | room=%s seer=%s reason=%s", self.room_id, seer_id, e)
-            await self.pubsub.emit_error(self.room_id, seer_id, str(e))
-            
-    async def _check_night_actions_complete(self) -> None:
+        next_phase = result.get("next_phase")
+        if next_phase is not None:
+            await self._emit_authoritative_event(
+                EventType.PHASE_CHANGED,
+                room_id,
+                build_phase_changed_payload(
+                    phase=next_phase,
+                    round_number=result.get("round", 0),
+                    timer_end=result.get("timer_end"),
+                ),
+            )
+            self._schedule_phase_timer(room_id, result.get("timer_end"))
+
+        await self._sync_room_state(room_id)
+
+    async def advance_phase_and_emit(self, room_id: str) -> None:
+        result = await advance_phase(self._get_redis(), room_id)
+        await self._emit_phase_outcome(room_id, result)
+
+    async def handle_cast_vote(self, room_id: str, client_id: str, payload: dict[str, Any]) -> None:
+        target_id = payload.get("target_id")
+        if not target_id:
+            raise ValueError("Missing target_id for cast_vote")
+
+        redis = self._get_redis()
+        vote_update = await cast_vote(redis, room_id, client_id, target_id)
+        await self._emit_authoritative_event(EventType.VOTE_UPDATE, room_id, vote_update)
+
+        # Controllo Timer: Tutti i vivi hanno votato?
+        players = await rs.get_all_players(redis, room_id)
+        alive_count = sum(1 for p in players.values() if p.alive)
+        votes = await rs.get_votes(redis, room_id)
+        
+        if len(votes) == alive_count:
+            # Salta il timer
+            self._cancel_phase_timer(room_id)
+            await self.advance_phase_and_emit(room_id)
+
+    async def handle_wolf_vote(self, sid: str, room_id: str, client_id: str, payload: dict[str, Any]) -> None:
+        target_id = payload.get("target_id")
+        if not target_id:
+            raise ValueError("Missing target_id for wolf_vote")
+
+        redis = self._get_redis()
+        await record_wolf_vote(redis, room_id, client_id, target_id)
+        await self._emit_authoritative_event(
+            EventType.WOLF_VOTE,
+            room_id,
+            WolfVoteAcceptedPayload(target_id=target_id),
+            to=sid,
+            publish=False,
+        )
+        
+        await self._check_night_actions_complete(room_id)
+
+    async def handle_seer_action(self, sid: str, room_id: str, client_id: str, payload: dict[str, Any]) -> None:
+        target_id = payload.get("target_id")
+        if not target_id:
+            raise ValueError("Missing target_id for seer_action")
+
+        redis = self._get_redis()
+        await record_seer_action(redis, room_id, client_id, target_id)
+        await self._emit_authoritative_event(
+            EventType.SEER_ACTION,
+            room_id,
+            SeerActionAcceptedPayload(target_id=target_id),
+            to=sid,
+            publish=False,
+        )
+        
+        await self._check_night_actions_complete(room_id)
+
+    async def _check_night_actions_complete(self, room_id: str) -> None:
         """Helper to check if all wolves and seer have acted. If so, skips timer."""
-        players = await rs.get_all_players(self.r, self.room_id)
+        redis = self._get_redis()
+        players = await rs.get_all_players(redis, room_id)
         
         # Check wolves
-        alive_wolves = [p for p in players.values() if p.alive and p.role and p.role.value == 'wolf']
-        wolf_votes = await rs.get_wolf_votes(self.r, self.room_id)
+        alive_wolves = [p for p in players.values() if p.alive and p.role and p.role.value == 'WOLF']
+        wolf_votes = await rs.get_wolf_votes(redis, room_id)
         wolves_done = len(wolf_votes) == len(alive_wolves)
         
         # Check seer
-        alive_seer = next((p for p in players.values() if p.alive and p.role and p.role.value == 'seer'), None)
-        seer_action = await rs.get_seer_action(self.r, self.room_id)
+        alive_seer = next((p for p in players.values() if p.alive and p.role and p.role.value == 'SEER'), None)
+        seer_action = await rs.get_seer_action(redis, room_id)
         seer_done = (alive_seer is None) or (seer_action is not None)
         
         if wolves_done and seer_done:
-            logger.info("All night actions complete. Skipping night timer | room=%s", self.room_id)
-            self._trigger_advance()
+            self._cancel_phase_timer(room_id)
+            await self.advance_phase_and_emit(room_id)
+
+    async def handle_game_start(self, room_id: str) -> None:
+        player_ids = self._connection_manager.get_client_ids(room_id)
+        if len(player_ids) < 5:
+            raise ValueError("Need at least 5 connected players to start the game")
+
+        redis = self._get_redis()
+        state = await rs.get_game_state(redis, room_id) or {}
+        wolf_count = state.get("wolf_count")
+        seer_count = state.get("seer_count")
+
+        assignment = await assign_roles(
+            redis,
+            room_id,
+            player_ids,
+            wolf_count=wolf_count,
+            seer_count=seer_count,
+        )
+        resolved_wolf_count = sum(1 for role in assignment.values() if role == Role.WOLF)
+        resolved_seer_count = sum(1 for role in assignment.values() if role == Role.SEER)
+        await rs.patch_game_state(
+            redis,
+            room_id,
+            wolf_count=resolved_wolf_count,
+            seer_count=resolved_seer_count,
+            ready_player_ids=[],
+        )
+        players = await rs.get_all_players(redis, room_id)
+        await self._emit_role_assignments(room_id, build_role_payloads(assignment, players))
+
+        timer_end = await set_phase(redis, room_id, Phase.NIGHT, round_number=0)
+        await self._sync_room_state(room_id)
+        await self._emit_authoritative_event(
+            EventType.PHASE_CHANGED,
+            room_id,
+            build_phase_changed_payload(Phase.NIGHT, 0, timer_end),
+        )
+        self._schedule_phase_timer(room_id, timer_end)
+
+    async def handle_phase_advance(self, room_id: str) -> None:
+        await self.advance_phase_and_emit(room_id)

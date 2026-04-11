@@ -14,8 +14,8 @@ const route      = useRoute()
 const lobbyStore = useLobbyStore()
 const gameStore  = useGameStore()
 
-// Estraiamo disconnect qui in alto, nel setup sincrono, per evitare il warning
-const { connect, disconnect, isConnected } = useSocket()
+// Estraiamo disconnect e on qui in alto, nel setup sincrono, per evitare il warning
+const { connect, disconnect, on, isConnected } = useSocket()
 const { copied, copy } = useClipboard()
 
 const lobbyCodeFromUrl = route.params.id || lobbyStore.lobbyCode
@@ -41,6 +41,15 @@ onMounted(async () => {
   // 3. ATTIVAZIONE LISTENER (Sempre prima della connessione!)
   lobbyStore.listenToLobbyEvents()
   gameStore.listenToGameEvents()
+
+  // 🛡️ NOVITÀ: ASCOLTIAMO IL RIFIUTO DEL SERVER PRIMA DI CONNETTERCI
+  on('connect_error', (err) => {
+    console.error('[LobbyView] Connessione rifiutata:', err.message)
+    // Salviamo l'errore nello store per mostrarlo nella Home
+    lobbyStore.error = err.message 
+    disconnect() // Stacchiamo la spina per sicurezza
+    router.push('/') // Ti rispediamo istantaneamente alla Home
+  })
 
   // 4. CONNESSIONE AL BACKEND
   // Usiamo l'indirizzo del cluster o localhost. useSocket userà l'auth dal localStorage automaticamente.

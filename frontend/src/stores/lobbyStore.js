@@ -45,7 +45,26 @@ export const useLobbyStore = defineStore('lobby', () => {
     return Math.max(1, Math.floor((Math.max(totalPlayers - seers, 0) - 1) / 2))
   })
 
-  // FIX: Ora la funzione è "a prova di bomba" e legge i JSON stringificati!
+  // ---- UTILS & VALIDATION ----
+
+  function validateNickname(name) {
+    if (!name || typeof name !== 'string') {
+      throw new Error("Il nome non può essere vuoto.")
+    }
+    const trimmed = name.trim()
+    if (trimmed.length < 3) {
+      throw new Error("Il nome deve avere almeno 3 caratteri.")
+    }
+    if (trimmed.length > 15) {
+      throw new Error("Il nome non può superare i 15 caratteri.")
+    }
+    // Permette solo lettere (A-Z, a-z), numeri (0-9), trattini (-) e underscore (_)
+    if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
+      throw new Error("Il nome può contenere solo lettere, numeri, trattini e underscore (senza spazi).")
+    }
+    return trimmed
+  }
+
   function extractPayload(message) {
     let msg = message
     if (typeof msg === 'string') {
@@ -282,22 +301,25 @@ export const useLobbyStore = defineStore('lobby', () => {
     })
   }
 
+  // ---- ACTIONS ----
+
   async function createLobby(playerName) {
     isLoading.value = true
     error.value = null
     try {
+      const safeName = validateNickname(playerName) // Validazione
       const code = 'WOLF-' + Math.floor(1000 + Math.random() * 9000)
 
-      sessionStorage.setItem('client_id', playerName)
+      sessionStorage.setItem('client_id', safeName)
       sessionStorage.setItem('room_id', code)
 
       lobbyCode.value = code
-      currentPlayerId.value = playerName
+      currentPlayerId.value = safeName
       players.value = [{
-        id: playerName,
-        player_id: playerName,
-        name: playerName,
-        username: playerName,
+        id: safeName,
+        player_id: safeName,
+        name: safeName,
+        username: safeName,
         isHost: true,
         is_host: true,
         ready: true,
@@ -308,6 +330,7 @@ export const useLobbyStore = defineStore('lobby', () => {
       syncRoleSetup()
     } catch (err) {
       error.value = err.message
+      throw err // Rilanciamo l'errore per farlo gestire all'interfaccia Vue
     } finally {
       isLoading.value = false
     }
@@ -317,8 +340,11 @@ export const useLobbyStore = defineStore('lobby', () => {
     isLoading.value = true
     error.value = null
     try {
+      if (!code || typeof code !== 'string' || code.trim() === '') {
+        throw new Error("Inserisci un codice stanza valido.")
+      }
       const safeCode = code.trim().toUpperCase()
-      const safeName = playerName.trim()
+      const safeName = validateNickname(playerName) // Validazione
       
       sessionStorage.setItem('client_id', safeName)
       sessionStorage.setItem('room_id', safeCode)
@@ -328,6 +354,7 @@ export const useLobbyStore = defineStore('lobby', () => {
     } catch (err) {
       error.value = err.message
       console.error('[LobbyStore] Errore durante joinLobby:', err)
+      throw err // Rilanciamo l'errore al componente
     } finally {
       isLoading.value = false
     }

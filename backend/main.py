@@ -211,6 +211,23 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
         client_id = client_id or params.get("client_id") or str(uuid.uuid4())
         room_id   = room_id   or params.get("room_id",   "lobby")
 
+    # ── 🛡️ CONTROLLI DI SICUREZZA ───────────────────────────────────────────
+    
+    # 1. Controllo Partita in Corso
+    current_state = await state_store.get_state(room_id)
+    if current_state:
+        phase = current_state.get("phase")
+        if phase and phase not in (Phase.LOBBY.value, Phase.ENDED.value):
+            logger.warning("Accesso negato: partita in corso | client=%s room=%s", client_id, room_id)
+            raise socketio.exceptions.ConnectionRefusedError("La partita è già in corso.")
+
+    # 2. Controllo Nickname Duplicato (Anti-clone / Anti-doppia scheda)
+    if connection_manager.client_connections_in_room(room_id, client_id) > 0:
+        logger.warning("Accesso negato: nome in uso | client=%s room=%s", client_id, room_id)
+        raise socketio.exceptions.ConnectionRefusedError(f"Il nome '{client_id}' è già in partita.")
+        
+    # ────────────────────────────────────────────────────────────────────────
+
     logger.info("connect | sid=%s client=%s room=%s instance=%s",
                 sid[:8], client_id, room_id, INSTANCE_ID)
 
@@ -223,8 +240,7 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
 
     # Recupera stato persistente e lista player completa (list[dict])
     players       = await state_store.add_player(room_id, client_id)
-    current_state = await state_store.get_state(room_id)
-
+    
     # Invia state sync al solo client che si (ri)connette
     sync_event = RedisEvent(
         event_type=EventType.GAME_STATE_SYNC,
@@ -250,8 +266,7 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     
     await sio.emit(EventType.PLAYER_JOINED, ws_msg.model_dump(), room=room_id, skip_sid=sid)
     await pubsub_manager.publish(join_event)
-
-
+    
 @sio.event
 async def disconnect(sid: str):
     """

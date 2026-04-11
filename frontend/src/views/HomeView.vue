@@ -15,14 +15,24 @@ const codeError = ref('')
 
 const isLoading = computed(() => lobbyStore.isLoading)
 
-// ---- VALIDAZIONE ----
+// ---- VALIDAZIONE LOCALE ----
 function validateName() {
-  if (!playerName.value.trim()) {
+  const name = playerName.value.trim()
+  if (!name) {
     nameError.value = 'Inserisci il tuo nome'
     return false
   }
-  if (playerName.value.trim().length < 2) {
-    nameError.value = 'Almeno 2 caratteri'
+  if (name.length < 3) {
+    nameError.value = 'Almeno 3 caratteri'
+    return false
+  }
+  if (name.length > 15) {
+    nameError.value = 'Massimo 15 caratteri'
+    return false
+  }
+  // Regex: Solo lettere, numeri, trattini e underscore. Niente spazi o ^, $, @, ecc.
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    nameError.value = 'Solo lettere, numeri, - e _ (senza spazi)'
     return false
   }
   nameError.value = ''
@@ -40,18 +50,45 @@ function validateCode() {
 
 // ---- AZIONI ----
 async function createLobby() {
+  // 1. Controllo locale immediato
   if (!validateName()) return
-  await lobbyStore.createLobby(playerName.value.trim())
-  if (!lobbyStore.error) {
+
+  // 2. Pulizia errori
+  nameError.value = ''
+  lobbyStore.error = null
+
+  try {
+    // 3. Creazione tramite lo store
+    await lobbyStore.createLobby(playerName.value)
     router.push('/lobby')
+  } catch (err) {
+    // 4. Se lo store si lamenta, mostriamo l'errore
+    nameError.value = err.message
+    lobbyStore.error = null
   }
 }
 
 async function joinLobby() {
-  if (!validateName() | !validateCode()) return
-  await lobbyStore.joinLobby(lobbyCode.value.trim().toUpperCase(), playerName.value.trim())
-  if (!lobbyStore.error) {
+  // Uso l'operatore || invece di | per un corretto cortocircuito logico
+  const isNameValid = validateName()
+  const isCodeValid = validateCode()
+  if (!isNameValid || !isCodeValid) return
+
+  nameError.value = ''
+  codeError.value = ''
+  lobbyStore.error = null
+
+  try {
+    await lobbyStore.joinLobby(lobbyCode.value, playerName.value)
     router.push('/lobby')
+  } catch (err) {
+    // Se l'errore contiene la parola "codice" o "stanza", lo mettiamo sotto il codice
+    if (err.message.toLowerCase().includes("codice") || err.message.toLowerCase().includes("stanza")) {
+      codeError.value = err.message
+    } else {
+      nameError.value = err.message
+    }
+    lobbyStore.error = null 
   }
 }
 
@@ -65,7 +102,6 @@ function selectMode(selected) {
 
 <template>
   <div class="home-bg">
-    <!-- Sfondo animato -->
     <div class="bg-layer">
       <div class="moon"></div>
       <div v-for="n in 30" :key="n" class="star" :style="{ '--i': n }"></div>
@@ -74,7 +110,6 @@ function selectMode(selected) {
     </div>
 
     <main class="home-wrap">
-      <!-- Logo / Titolo -->
       <header class="hero" :class="{ 'hero--shrink': mode !== null }">
         <div class="wolf-icon">🐺</div>
         <h1 class="title">
@@ -86,7 +121,12 @@ function selectMode(selected) {
         </p>
       </header>
 
-      <!-- Selezione modalità -->
+        <Transition name="fade">
+        <div v-if="lobbyStore.error && mode === null" class="server-error" style="width: 100%; text-align: center; margin-bottom: 1rem;">
+          {{ lobbyStore.error }}
+        </div>
+      </Transition>
+      
       <section v-if="mode === null" class="mode-select">
         <button class="mode-card mode-card--create" @click="selectMode('create')">
           <span class="mode-icon">🏰</span>
@@ -101,7 +141,6 @@ function selectMode(selected) {
         </button>
       </section>
 
-      <!-- Form CREA -->
       <section v-else-if="mode === 'create'" class="form-panel">
         <button class="back-btn" @click="selectMode(null)">← indietro</button>
         <h2 class="form-title">Nuova Partita</h2>
@@ -130,7 +169,6 @@ function selectMode(selected) {
         </button>
       </section>
 
-      <!-- Form ENTRA -->
       <section v-else-if="mode === 'join'" class="form-panel">
         <button class="back-btn" @click="selectMode(null)">← indietro</button>
         <h2 class="form-title">Entra in Partita</h2>
