@@ -81,6 +81,7 @@ class EventType(StrEnum):
     # Sistema
     ERROR = "error"
     PONG = "pong"  # risposta al ping del client
+    CHAT_MESSAGE = "chat_message"
 
 
 SERVER_EVENT_PAYLOAD_TYPES: dict[EventType, type[Any]] = {

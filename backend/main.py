@@ -1,14 +1,9 @@
-# Entry point FastAPI + Socket.IO.
-#
-# Socket.IO viene montato come ASGI app separata e composta con FastAPI
-# tramite socketio.ASGIApp. Uvicorn serve l'app composta.
-#
-# URL client:
-#   Connessione:  http://game.local/socket.io/  (Socket.IO negozia il transport)
-#   Evento emit:  socket.emit('player_action', { room_id, payload })
+# Entry point FastAPI + Socket.IO - VERSIONE AGGIORNATA
+# Gestisce correttamente gli oggetti player completi invece di soli ID
 
 import asyncio
 import logging
+import random
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -17,6 +12,7 @@ from typing import Any
 
 import socketio
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -25,6 +21,7 @@ from core.instance import INSTANCE_ID
 from core.messages import EventType, RedisEvent, WSMessage
 from core.metrics import WS_MESSAGES_RECEIVED_TOTAL, WS_MESSAGES_SENT_TOTAL
 from core.state_store import GameStateStore
+from models.game import Phase, Role
 from models.events import ErrorPayload
 from pubsub.manager import PubSubManager
 from services.game_runtime import GameRuntime
@@ -35,6 +32,7 @@ from services.lobby_logic import (
     ensure_domain_player,
     get_player,
     mark_player_disconnected,
+    promote_host_if_needed,
     sync_room_state as sync_lobby_room_state,
 )
 from services.lobby_runtime import LobbyRuntime
@@ -49,7 +47,6 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 # ── Socket.IO server ──────────────────────────────────────────────────────────
-# cors_allowed_origins="*" per sviluppo; restringere in produzione.
 sio = socketio.AsyncServer(
     async_mode="asgi",
     cors_allowed_origins="*",
@@ -65,6 +62,56 @@ phase_tasks: dict[str, asyncio.Task] = {}
 game_runtime: GameRuntime | None = None
 lobby_runtime: LobbyRuntime | None = None
 
+
+def _normalize_role_setup(total_players: int, role_setup: dict | None) -> dict[str, int]:
+    role_setup = role_setup or {}
+    safe_total = max(0, total_players)
+    seers = min(max(int(role_setup.get("seers", 0)), 0), 1 if safe_total >= 5 else 0)
+    wolves = max(1, int(role_setup.get("wolves", 1)))
+
+    wolves_cap = max(1, (max(safe_total - seers, 0) - 1) // 2)
+    wolves = min(wolves, wolves_cap)
+
+    villagers = max(0, safe_total - wolves - seers)
+
+    while villagers <= wolves and wolves > 1:
+      wolves -= 1
+      villagers = max(0, safe_total - wolves - seers)
+
+    while villagers <= wolves and seers > 0:
+      seers -= 1
+      villagers = max(0, safe_total - wolves - seers)
+
+    return {"wolves": wolves, "seers": seers, "villagers": villagers}
+
+
+def _assign_roles(players: list[dict], role_setup: dict, room_id: str) -> list[dict]:
+    ordered_players = sorted(
+        players,
+        key=lambda player: (
+            player.get("joined_at", float("inf")),
+            player.get("player_id", ""),
+        ),
+    )
+    normalized_setup = _normalize_role_setup(len(ordered_players), role_setup)
+    role_pool = (
+        [Role.WOLF.value] * normalized_setup["wolves"]
+        + [Role.SEER.value] * normalized_setup["seers"]
+        + [Role.VILLAGER.value] * normalized_setup["villagers"]
+    )
+
+    rng = random.Random(f"{room_id}:{'|'.join(player['player_id'] for player in ordered_players)}")
+    rng.shuffle(role_pool)
+
+    assigned_players = []
+    for index, player in enumerate(ordered_players):
+        assigned_players.append({
+            **player,
+            "role": role_pool[index] if index < len(role_pool) else Role.VILLAGER.value,
+            "alive": player.get("alive", True),
+        })
+
+    return assigned_players
 
 def _domain_redis():
     if state_store._redis is None:
@@ -95,6 +142,7 @@ def _schedule_phase_timer(room_id: str, timer_end: float | None) -> None:
             logger.exception("Errore nel phase timer | room=%s", room_id)
 
     phase_tasks[room_id] = asyncio.create_task(_runner(), name=f"phase-timer:{room_id}")
+
 # ── Lifespan FastAPI ──────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -119,6 +167,14 @@ app = FastAPI(
     docs_url="/docs" if settings.app_env == "development" else None,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 
@@ -134,17 +190,14 @@ async def health():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SOCKET.IO EVENT HANDLERS
+# SOCKET.IO EVENT HANDLERS - VERSIONE AGGIORNATA
 # ══════════════════════════════════════════════════════════════════════════════
 
 @sio.event
 async def connect(sid: str, environ: dict, auth: dict | None = None):
     """
     Triggered quando un client si connette.
-    Il client deve inviare auth={client_id, room_id} oppure
-    passarli come query params: /socket.io/?client_id=xxx&room_id=yyy
     """
-    # Estrai client_id e room_id da auth o query string
     client_id = None
     room_id   = None
 
@@ -153,7 +206,6 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
         room_id   = auth.get("room_id")
 
     if not client_id or not room_id:
-        # Fallback: leggi dalla query string WSGI
         query = environ.get("QUERY_STRING", "")
         params = dict(p.split("=") for p in query.split("&") if "=" in p)
         client_id = client_id or params.get("client_id") or str(uuid.uuid4())
@@ -162,53 +214,49 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     logger.info("connect | sid=%s client=%s room=%s instance=%s",
                 sid[:8], client_id, room_id, INSTANCE_ID)
 
-    # Entra nella Socket.IO room
     await sio.enter_room(sid, room_id)
-
-    # Registra nel ConnectionManager (per metriche e health check)
     connection_manager.connect(sid, room_id, client_id)
-
-    # Sottoscrivi questa istanza al canale Redis della stanza
     await pubsub_manager.subscribe_room(room_id)
 
     await ensure_domain_player(_domain_redis(), room_id, client_id)
     await sync_lobby_room_state(_domain_redis(), state_store, room_id)
 
-    # Recupera stato persistente e lista player
+    # Recupera stato persistente e lista player completa (list[dict])
     players       = await state_store.add_player(room_id, client_id)
     current_state = await state_store.get_state(room_id)
 
     # Invia state sync al solo client che si (ri)connette
-    if current_state is not None:
-        sync_event = RedisEvent(
-            event_type=EventType.GAME_STATE_SYNC,
-            room_id=room_id,
-            sender_id=INSTANCE_ID,
-            payload=asdict(build_state_sync_payload(current_state, list(players))),
-        )
-        ws_msg = WSMessage.from_redis_event(sync_event)
-        await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), to=sid)
+    sync_event = RedisEvent(
+        event_type=EventType.GAME_STATE_SYNC,
+        room_id=room_id,
+        sender_id=INSTANCE_ID,
+        payload={"state": current_state or {}, "players": players},
+    )
+    ws_msg = WSMessage.from_redis_event(sync_event)
+    await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), to=sid)
 
     player = await get_player(_domain_redis(), room_id, client_id)
-    await game_runtime.emit_role_assignment_for_player(room_id, client_id, sid)
+    if game_runtime:
+        await game_runtime.emit_role_assignment_for_player(room_id, client_id, sid)
 
     # Notifica tutti gli altri client (locale + altre istanze via Redis)
     join_event = RedisEvent(
         event_type=EventType.PLAYER_JOINED,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload=asdict(build_player_joined_payload(client_id, player, list(players))),
+        payload={"client_id": client_id, "player": asdict(player) if player else {}, "players": players},
     )
     ws_msg = WSMessage.from_redis_event(join_event)
-    # Emetti nella room escludendo il nuovo arrivato (skip_sid)
-    await sio.emit(EventType.PLAYER_JOINED, ws_msg.model_dump(),
-                   room=room_id, skip_sid=sid)
+    
+    await sio.emit(EventType.PLAYER_JOINED, ws_msg.model_dump(), room=room_id, skip_sid=sid)
     await pubsub_manager.publish(join_event)
 
 
 @sio.event
 async def disconnect(sid: str):
-    """Triggered quando un client si disconnette."""
+    """
+    Triggered quando un client si disconnette.
+    """
     room_id   = connection_manager.get_room_of(sid)
     client_id = connection_manager.get_client_id(sid)
 
@@ -218,9 +266,17 @@ async def disconnect(sid: str):
     logger.info("disconnect | sid=%s client=%s room=%s", sid[:8], client_id, room_id)
 
     connection_manager.disconnect(sid, room_id)
+    if client_id and connection_manager.client_connections_in_room(room_id, client_id) > 0:
+        logger.info(
+            "client ancora connesso su un'altra socket | client=%s room=%s",
+            client_id, room_id
+        )
+        return
+
     await mark_player_disconnected(_domain_redis(), room_id, client_id or sid)
 
     remaining = await state_store.remove_player(room_id, client_id or sid)
+    await promote_host_if_needed(_domain_redis(), room_id, remaining)
     await sync_lobby_room_state(_domain_redis(), state_store, room_id)
     leaving_player = await get_player(_domain_redis(), room_id, client_id or sid)
 
@@ -228,7 +284,7 @@ async def disconnect(sid: str):
         event_type=EventType.PLAYER_LEFT,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload=asdict(build_player_left_payload(client_id or sid, leaving_player, list(remaining))),
+        payload={"client_id": client_id, "player": asdict(leaving_player) if leaving_player else {}, "players": remaining},
     )
     ws_msg = WSMessage.from_redis_event(leave_event)
 
@@ -242,6 +298,52 @@ async def disconnect(sid: str):
     if connection_manager.client_count(room_id) == 0:
         await pubsub_manager.unsubscribe_room(room_id)
         logger.info("Stanza vuota, unsubscribed da Redis | room=%s", room_id)
+
+
+@sio.on("chat:message")
+@sio.on(EventType.CHAT_MESSAGE.value)
+async def handle_chat_message(sid: str, data: dict):
+    room_id = connection_manager.get_room_of(sid)
+    client_id = connection_manager.get_client_id(sid) or sid
+    logger.info("chat_message received | sid=%s client=%s room=%s data=%s", sid[:8], client_id, room_id, data)
+
+    if not room_id:
+        logger.warning("Chat da sid senza room: %s", sid[:8])
+        return
+
+    payload = data if isinstance(data, dict) else {"raw": data}
+    text = str(payload.get("text", "")).strip()
+    if not text:
+        return
+
+    current_players = await state_store.get_players(room_id)
+    sender = next(
+        (player for player in current_players if player.get("player_id") == client_id),
+        None,
+    )
+
+    redis_event = RedisEvent(
+        event_type=EventType.CHAT_MESSAGE,
+        room_id=room_id,
+        sender_id=INSTANCE_ID,
+        payload={
+            "senderId": client_id,
+            "senderName": sender.get("name", client_id) if sender else client_id,
+            "text": text,
+            "channel": payload.get("channel", "global"),
+        },
+    )
+
+    ws_msg = WSMessage.from_redis_event(redis_event)
+    out = ws_msg.model_dump()
+    logger.info("chat_message emit | room=%s payload=%s", room_id, redis_event.payload)
+
+    await sio.emit(EventType.CHAT_MESSAGE, out, room=room_id)
+    WS_MESSAGES_SENT_TOTAL.labels(
+        instance_id=INSTANCE_ID,
+        event_type=EventType.CHAT_MESSAGE,
+    ).inc()
+    await pubsub_manager.publish(redis_event)
 
 
 async def _emit_error(sid: str, room_id: str, message: str) -> None:
@@ -325,7 +427,6 @@ async def _broadcast_passthrough(event: str, room_id: str, client_id: str, paylo
 async def catch_all(event: str, sid: str, data: dict):
     """
     Handler generico per tutti gli altri eventi inviati dal client.
-    Il client emette: socket.emit('player_action', { room_id, payload })
     """
     room_id   = connection_manager.get_room_of(sid)
     client_id = connection_manager.get_client_id(sid) or sid
@@ -336,6 +437,10 @@ async def catch_all(event: str, sid: str, data: dict):
 
     # Ignora eventi interni Socket.IO
     if event in ("connect", "disconnect", "connect_error"):
+        return
+
+    # La chat ha un handler dedicato: non va rilavorata nel catch-all
+    if event in ("chat:message", EventType.CHAT_MESSAGE):
         return
 
     WS_MESSAGES_RECEIVED_TOTAL.labels(
@@ -353,13 +458,13 @@ async def catch_all(event: str, sid: str, data: dict):
         if event == EventType.SEER_ACTION:
             await game_runtime.handle_seer_action(sid, room_id, client_id, payload)
             return
-        if event == EventType.LOBBY_UPDATE_SETTINGS:
+        if event in (EventType.LOBBY_UPDATE_SETTINGS, "role_setup_updated"):
             await lobby_runtime.handle_update_settings(room_id, client_id, payload)
             return
-        if event == EventType.LOBBY_PLAYER_READY:
+        if event in (EventType.LOBBY_PLAYER_READY, "player_ready"):
             await lobby_runtime.handle_player_ready(room_id, client_id, payload)
             return
-        if event in (EventType.GAME_START, "lobby:start_game"):
+        if event in (EventType.GAME_START, "lobby:start_game", "start_game"):
             await lobby_runtime.validate_can_start_game(
                 room_id,
                 client_id,
@@ -385,11 +490,11 @@ async def catch_all(event: str, sid: str, data: dict):
         await _emit_error(sid, room_id, f"Internal error while handling {event}")
         return
 
+    # Se non è uno degli eventi coperti, facciamo semplicemente passthrough
     await _broadcast_passthrough(event, room_id, client_id, payload)
 
 
 # ── App ASGI composta ─────────────────────────────────────────────────────────
-# Socket.IO intercetta /socket.io/*, FastAPI gestisce tutto il resto.
 asgi_app = socketio.ASGIApp(
     socketio_server=sio,
     other_asgi_app=app,

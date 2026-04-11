@@ -5,10 +5,10 @@
  * Usata in LobbyView (retro misterioso) e GameView (con ruolo rivelato).
  *
  * Props:
- *   player    — { player_id, username, isHost?, ready?, alive?, role? }
- *   isMe      — true se è il giocatore corrente
- *   showRole  — true per mostrare il ruolo rivelato (fase ENDED)
- *   canKick   — true se l'host può rimuovere questo giocatore
+ * player   — { player_id, username, isHost?, ready?, alive?, role? }
+ * isMe     — true se è il giocatore corrente
+ * showRole — true per mostrare il ruolo rivelato (fase ENDED)
+ * canKick  — true se l'host può rimuovere questo giocatore
  */
 import PlayerAvatar from '@/components/PlayerAvatar.vue'
 
@@ -61,21 +61,19 @@ function isAlive() {
     :class="{
       'pcard--me':    isMe,
       'pcard--dead':  !isAlive(),
-      'pcard--ready': player.ready,
+      'pcard--ready': !!player.ready, // FIX: Cast forzato a booleano
     }"
     :style="{
       '--cb': palette().bg,
       '--cc': palette().border,
     }"
   >
-    <!-- SVG retro carta -->
     <div class="pcard-art">
       <svg viewBox="0 0 120 160" xmlns="http://www.w3.org/2000/svg">
         <rect width="120" height="160" rx="8" :fill="palette().bg"/>
         <rect x="6" y="6" width="108" height="148" rx="5"
           fill="none" :stroke="palette().border" stroke-width="0.8" opacity="0.4"/>
 
-        <!-- Ruolo rivelato -->
         <template v-if="showRole && player.role">
           <text x="60" y="85" text-anchor="middle"
             font-size="40" :fill="palette().border" opacity="0.8">
@@ -88,7 +86,6 @@ function isAlive() {
           </text>
         </template>
 
-        <!-- Retro misterioso -->
         <template v-else>
           <circle cx="60" cy="72" r="26" fill="none"
             :stroke="palette().border" stroke-width="1" opacity="0.25"/>
@@ -102,24 +99,20 @@ function isAlive() {
             :fill="palette().border" opacity="0.45">RUOLO SEGRETO</text>
         </template>
 
-        <!-- Angoli decorativi -->
         <text x="11"  y="22"  font-size="9" font-family="serif" :fill="palette().border" opacity="0.6">♦</text>
         <text x="109" y="22"  font-size="9" font-family="serif" :fill="palette().border" opacity="0.6" text-anchor="end">♦</text>
         <text x="11"  y="154" font-size="9" font-family="serif" :fill="palette().border" opacity="0.6">♦</text>
         <text x="109" y="154" font-size="9" font-family="serif" :fill="palette().border" opacity="0.6" text-anchor="end">♦</text>
 
-        <!-- Linee ornamentali -->
         <line x1="20" y1="28"  x2="100" y2="28"  :stroke="palette().border" stroke-width="0.4" opacity="0.25"/>
         <line x1="20" y1="130" x2="100" y2="130" :stroke="palette().border" stroke-width="0.4" opacity="0.25"/>
 
-        <!-- Overlay morto -->
         <rect v-if="!isAlive()" width="120" height="160" rx="8" fill="rgba(0,0,0,0.55)"/>
         <text v-if="!isAlive()" x="60" y="88" text-anchor="middle"
           font-size="32" fill="rgba(255,255,255,0.25)">💀</text>
       </svg>
     </div>
 
-    <!-- Footer carta -->
     <div class="pcard-footer">
       <PlayerAvatar
         :player-id="playerId()"
@@ -132,15 +125,15 @@ function isAlive() {
         <span v-if="player.isHost" class="pcard-tag host">👑</span>
         <span v-if="isMe"          class="pcard-tag me">tu</span>
       </div>
-      <div class="pcard-status" :class="{ ready: player.ready, dead: !isAlive() }">
+      
+      <div class="pcard-status" :class="{ ready: !!player.ready, dead: !isAlive() }">
         <template v-if="!isAlive()">eliminato</template>
-        <template v-else-if="player.ready !== undefined">
+        <template v-else>
           {{ player.ready ? '● pronto' : '○ attesa' }}
         </template>
       </div>
     </div>
 
-    <!-- Kick button (solo host, solo in lobby) -->
     <button
       v-if="canKick"
       class="pcard-kick"
@@ -148,7 +141,6 @@ function isAlive() {
       title="Rimuovi"
     >✕</button>
 
-    <!-- Glow se pronto -->
     <div v-if="player.ready && isAlive()" class="pcard-glow"></div>
   </div>
 </template>
@@ -204,6 +196,7 @@ function isAlive() {
   font-size: 0.65rem;
   color: rgba(232,224,213,0.35);
   letter-spacing: 0.03em;
+  transition: color 0.3s ease; /* Aggiunto per un cambio più fluido */
 }
 .pcard-status.ready { color: #4ade80; }
 .pcard-status.dead  { color: rgba(248,113,113,0.4); }

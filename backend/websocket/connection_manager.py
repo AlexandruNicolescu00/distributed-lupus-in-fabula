@@ -80,6 +80,14 @@ class ConnectionManager:
     def get_client_id(self, sid: str) -> str | None:
         return self._clients.get(sid)
 
+    def client_connections_in_room(self, room_id: str, client_id: str) -> int:
+        """Conta quante connessioni attive ha un client in una room su questa istanza."""
+        return sum(
+            1
+            for sid in self._rooms.get(room_id, set())
+            if self._clients.get(sid) == client_id
+        )
+
     def get_sid(self, room_id: str, client_id: str) -> str | None:
         for sid in self._rooms.get(room_id, set()):
             if self._clients.get(sid) == client_id:

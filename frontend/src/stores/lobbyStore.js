@@ -1,136 +1,408 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import { lobbyApi } from '@/services/api'
 import { useSocket } from '@/composables/useSocket'
 
 export const useLobbyStore = defineStore('lobby', () => {
-  // ---- STATE ----
   const lobbyCode = ref(null)
-  const players = ref([])          // { id, name, isHost, ready }
+  const players = ref([])
   const currentPlayerId = ref(null)
+  const roleSetup = ref({ wolves: 1, seers: 1 })
+  const hostPlayerId = ref(null)
+  const readyPlayerIds = ref([])
   const isLoading = ref(false)
   const error = ref(null)
+  const listenersBound = ref(false)
 
-  const { connect, emit, on, off, isConnected } = useSocket()
+  const { connect, emit, on, isConnected } = useSocket()
 
-  // ---- GETTERS ----
   const currentPlayer = computed(() =>
-    players.value.find((p) => p.id === currentPlayerId.value) ?? null
+    players.value.find((player) => playerIdOf(player) === currentPlayerId.value) ?? null
   )
-  const isHost = computed(() => currentPlayer.value?.isHost ?? false)
-  const allReady = computed(() =>
-    players.value.filter((p) => !p.isHost).every((p) => p.ready)
+
+  const isHost = computed(() => currentPlayer.value?.is_host || currentPlayer.value?.isHost || false)
+  const isCurrentPlayerReady = computed(() => currentPlayer.value?.ready || false)
+
+  const allReady = computed(() => {
+    const guests = players.value.filter((player) => !(player.is_host || player.isHost))
+    if (guests.length === 0) return false
+    return guests.every((player) => player.ready)
+  })
+
+  const readyCount = computed(() =>
+    players.value.filter((player) => player.ready && !(player.is_host || player.isHost)).length
   )
-  const readyCount = computed(() => players.value.filter((p) => p.ready).length)
+  const readyProgress = computed(() => {
+    const guestsCount = Math.max(0, players.value.filter((player) => !(player.is_host || player.isHost)).length)
+    if (guestsCount === 0) return 0
+    return (readyCount.value / guestsCount) * 100
+  })
 
-  // ---- ACTIONS ----
+  const roleSummary = computed(() => normalizeRoleSetup(players.value.length))
+  const maxSeers = computed(() => (players.value.length >= 5 ? 1 : 0))
+  const maxWolves = computed(() => {
+    const totalPlayers = players.value.length
+    const seers = Math.min(roleSetup.value.seers, maxSeers.value)
+    return Math.max(1, Math.floor((Math.max(totalPlayers - seers, 0) - 1) / 2))
+  })
 
-  async function createLobby(playerName) {
-  isLoading.value = true
-  error.value = null
-  try {
-    // MOCK TEMPORANEO — sostituire con la riga sotto quando il backend è pronto
-    // const data = await lobbyApi.create(playerName)
-    const data = {
-      lobbyCode: 'WOLF-' + Math.floor(1000 + Math.random() * 9000),
-      playerId: 'p' + Date.now(),
+  // FIX: Ora la funzione è "a prova di bomba" e legge i JSON stringificati!
+  function extractPayload(message) {
+    let msg = message
+    if (typeof msg === 'string') {
+      try { msg = JSON.parse(msg) } catch (e) { return {} }
+    }
+    // Nel caso il payload sia annidato e stringificato a sua volta
+    if (msg?.payload && typeof msg.payload === 'string') {
+      try { msg.payload = JSON.parse(msg.payload) } catch (e) {}
+    }
+    return msg?.payload && typeof msg.payload === 'object' ? msg.payload : (msg || {})
+  }
+
+  function playerIdOf(player) {
+    return player?.player_id || player?.id || null
+  }
+
+  function hostIdFromPlayers() {
+    return players.value.find((player) => player.is_host || player.isHost)?.player_id ?? null
+  }
+
+  function syncLobbyState(state = {}) {
+    if (state.host_id !== undefined) {
+      hostPlayerId.value = state.host_id ?? null
+    } else if (!hostPlayerId.value) {
+      hostPlayerId.value = hostIdFromPlayers()
     }
 
-    lobbyCode.value = data.lobbyCode
-    currentPlayerId.value = data.playerId
-
-    // Aggiungi te stesso alla lista giocatori
-    players.value = [
-      { id: data.playerId, name: playerName, isHost: true, ready: true }
-    ]
-
-    // _connectSocket()  // commentato finché il backend non è pronto
-  } catch (err) {
-    error.value = err.message
-  } finally {
-    isLoading.value = false
+    if (Array.isArray(state.ready_player_ids)) {
+      readyPlayerIds.value = [...state.ready_player_ids]
+    }
   }
-}
 
-async function joinLobby(code, playerName) {
-  isLoading.value = true
-  error.value = null
-  try {
-    // MOCK TEMPORANEO — sostituire con la riga sotto quando il backend è pronto
-    // const data = await lobbyApi.join(code, playerName)
-    const data = {
-      playerId: 'p' + Date.now(),
+  function normalizeRoleSetup(totalPlayers = players.value.length, source = roleSetup.value) {
+    const safeTotal = Math.max(0, totalPlayers)
+    let seers = Math.min(Math.max(source?.seers ?? 0, 0), safeTotal >= 5 ? 1 : 0)
+    let wolves = Math.max(1, source?.wolves ?? 1)
+
+    const wolvesCap = Math.max(1, Math.floor((Math.max(safeTotal - seers, 0) - 1) / 2))
+    wolves = Math.min(wolves, wolvesCap)
+
+    let villagers = Math.max(0, safeTotal - wolves - seers)
+
+    while (villagers <= wolves && wolves > 1) {
+      wolves -= 1
+      villagers = Math.max(0, safeTotal - wolves - seers)
     }
 
-    lobbyCode.value = code
-    currentPlayerId.value = data.playerId
+    while (villagers <= wolves && seers > 0) {
+      seers -= 1
+      villagers = Math.max(0, safeTotal - wolves - seers)
+    }
 
-    // Simula altri giocatori già in lobby
-    players.value = [
-      { id: 'p_host', name: 'Host', isHost: true, ready: true },
-      { id: data.playerId, name: playerName, isHost: false, ready: false },
-    ]
-
-    // _connectSocket()  // commentato finché il backend non è pronto
-  } catch (err) {
-    error.value = err.message
-  } finally {
-    isLoading.value = false
-  }
-}
-
-  /** Segna il giocatore corrente come pronto/non pronto */
-  function toggleReady() {
-    emit('lobby:ready_toggle', { lobbyCode: lobbyCode.value, playerId: currentPlayerId.value })
+    return { wolves, seers, villagers }
   }
 
-  /** Avvia la partita (solo host) */
-  function startGame() {
-    if (!isHost.value) return
-    emit('lobby:start_game', { lobbyCode: lobbyCode.value })
-  }
+  function normalizeIncomingRoleSetup(remoteSetup = {}, totalPlayers = players.value.length) {
+    if (!remoteSetup || typeof remoteSetup !== 'object') {
+      return normalizeRoleSetup(totalPlayers)
+    }
 
-  /** Rimuove un giocatore dalla lobby (solo host) */
-  function kickPlayer(targetId) {
-    if (!isHost.value) return
-    emit('lobby:kick_player', { lobbyCode: lobbyCode.value, targetId })
-  }
-
-  /** Resetta lo store (es. quando si esce dalla lobby) */
-  function reset() {
-    lobbyCode.value = null
-    players.value = []
-    currentPlayerId.value = null
-    error.value = null
-  }
-
-  // ---- SOCKET PRIVATO ----
-  function _connectSocket() {
-    connect()
-
-    // Entra nella stanza Socket.IO
-    emit('lobby:join', { lobbyCode: lobbyCode.value, playerId: currentPlayerId.value })
-
-    // Aggiornamento lista giocatori
-    on('lobby:players_updated', (updatedPlayers) => {
-      players.value = updatedPlayers
+    return normalizeRoleSetup(totalPlayers, {
+      wolves: remoteSetup.wolves ?? remoteSetup.wolf_count ?? roleSetup.value.wolves,
+      seers: remoteSetup.seers ?? remoteSetup.seer_count ?? roleSetup.value.seers,
     })
+  }
 
-    // Un giocatore è stato kickato
-    on('lobby:player_kicked', ({ playerId }) => {
-      if (playerId === currentPlayerId.value) {
-        reset()
-        // Il router redirect è gestito dal componente che ascolta reset
+  function parsePlayers(remotePlayers, state = {}) {
+    if (!Array.isArray(remotePlayers)) return players.value
+
+    syncLobbyState(state)
+
+    const readySet = new Set(readyPlayerIds.value)
+    const hostId = hostPlayerId.value
+    const hasExplicitHost = remotePlayers.some(
+      (player) => typeof player === 'object' && (player.is_host === true || player.isHost === true)
+    )
+
+    return remotePlayers.map((player, index) => {
+      const resolvedId = typeof player === 'object'
+        ? playerIdOf(player) ?? `player-${index}`
+        : player ?? `player-${index}`
+
+      const isPlayerHost = hasExplicitHost
+        ? (player?.is_host === true || player?.isHost === true)
+        : hostId
+          ? resolvedId === hostId
+          : index === 0
+
+      const readyFromState = readySet.has(resolvedId)
+      const readyFromPayload = typeof player === 'object' ? player.ready === true : false
+
+      return {
+        id: resolvedId,
+        player_id: resolvedId,
+        name: player?.username || player?.name || resolvedId,
+        username: player?.username || player?.name || resolvedId,
+        isHost: isPlayerHost,
+        is_host: isPlayerHost,
+        ready: isPlayerHost ? (readyFromState || readyFromPayload || true) : (readyFromState || readyFromPayload),
+        connected: typeof player === 'object' ? player.connected !== false : true,
+        alive: typeof player === 'object' ? player.alive ?? true : true,
+        role: typeof player === 'object' ? player.role ?? null : null,
       }
     })
   }
 
+  function syncRoleSetup() {
+    const normalized = normalizeRoleSetup(players.value.length)
+    roleSetup.value = {
+      wolves: normalized.wolves,
+      seers: normalized.seers,
+    }
+    return normalized
+  }
+
+  function applyRoleSetup(remoteSetup) {
+    const normalized = normalizeIncomingRoleSetup(remoteSetup, players.value.length)
+    roleSetup.value = {
+      wolves: normalized.wolves,
+      seers: normalized.seers,
+    }
+    return syncRoleSetup()
+  }
+
+  function updateReadyStatesFromIds(nextReadyPlayerIds = []) {
+    readyPlayerIds.value = Array.isArray(nextReadyPlayerIds) ? [...nextReadyPlayerIds] : []
+    const readySet = new Set(readyPlayerIds.value)
+    players.value = players.value.map((player) => {
+      const playerId = playerIdOf(player)
+      const host = player.is_host || player.isHost
+      return {
+        ...player,
+        ready: host ? true : readySet.has(playerId),
+      }
+    })
+  }
+
+  function setPlayerReadyLocally(targetId, isReady) {
+    if (!targetId) return
+
+    const nextReadySet = new Set(readyPlayerIds.value)
+    if (isReady) {
+      nextReadySet.add(targetId)
+    } else {
+      nextReadySet.delete(targetId)
+    }
+
+    updateReadyStatesFromIds([...nextReadySet])
+  }
+
+  function ensureHostReadySynced() {
+    if (!isHost.value || !currentPlayerId.value) return
+    if (currentPlayer.value?.ready) return
+    emit('lobby:player_ready', { ready: true })
+  }
+
+  function adjustRole(role, delta) {
+    const current = syncRoleSetup()
+
+    if (role === 'wolves') {
+      roleSetup.value.wolves = Math.max(1, current.wolves + delta)
+    }
+
+    if (role === 'seers') {
+      roleSetup.value.seers = Math.max(0, current.seers + delta)
+    }
+
+    const normalized = syncRoleSetup()
+    emit('lobby:update_settings', {
+      wolf_count: normalized.wolves,
+      seer_count: normalized.seers,
+    })
+  }
+
+  function listenToLobbyEvents() {
+    if (listenersBound.value) return
+    listenersBound.value = true
+
+    on('game_state_sync', (message) => {
+      const payload = extractPayload(message)
+      console.log('[Lobby] game_state_sync:', payload)
+      if (payload.players) {
+        players.value = [...payload.players]
+      }
+      
+      const state = payload.state || {}
+      if (state.host_id) hostPlayerId.value = state.host_id
+      if (state.role_setup) {
+        roleSetup.value.wolves = state.role_setup.wolves ?? roleSetup.value.wolves
+        roleSetup.value.seers = state.role_setup.seers ?? roleSetup.value.seers
+      }
+    })
+
+    on('player_joined', (message) => {
+      const payload = extractPayload(message)
+      console.log('[Lobby] player_joined:', payload)
+      if (payload.players) {
+        players.value = [...payload.players]
+      }
+    })
+
+    on('player_left', (message) => {
+      const payload = extractPayload(message)
+      console.log('[Lobby] player_left:', payload)
+      if (payload.players) {
+        players.value = [...payload.players]
+      }
+    })
+
+    const handleReady = (message) => {
+      const payload = extractPayload(message)
+      if (payload.players) {
+        players.value = [...payload.players]
+      }
+    }
+    on('player_ready', handleReady)
+    on('lobby:player_ready_changed', handleReady)
+
+    const handleSettings = (message) => {
+      const payload = extractPayload(message)
+      const setup = payload.role_setup || payload
+      if (setup.wolves !== undefined || setup.wolf_count !== undefined) {
+        roleSetup.value.wolves = setup.wolves ?? setup.wolf_count
+      }
+      if (setup.seers !== undefined || setup.seer_count !== undefined) {
+        roleSetup.value.seers = setup.seers ?? setup.seer_count
+      }
+    }
+    on('role_setup_updated', handleSettings)
+    on('lobby:settings_updated', handleSettings)
+
+    on('room_closed', () => {
+      error.value = "L'host ha chiuso la lobby."
+    })
+  }
+
+  async function createLobby(playerName) {
+    isLoading.value = true
+    error.value = null
+    try {
+      const code = 'WOLF-' + Math.floor(1000 + Math.random() * 9000)
+
+      sessionStorage.setItem('client_id', playerName)
+      sessionStorage.setItem('room_id', code)
+
+      lobbyCode.value = code
+      currentPlayerId.value = playerName
+      players.value = [{
+        id: playerName,
+        player_id: playerName,
+        name: playerName,
+        username: playerName,
+        isHost: true,
+        is_host: true,
+        ready: true,
+        connected: true,
+        alive: true,
+        role: null,
+      }]
+      syncRoleSetup()
+    } catch (err) {
+      error.value = err.message
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function joinLobby(code, playerName) {
+    isLoading.value = true
+    error.value = null
+    try {
+      const safeCode = code.trim().toUpperCase()
+      const safeName = playerName.trim()
+      
+      sessionStorage.setItem('client_id', safeName)
+      sessionStorage.setItem('room_id', safeCode)
+
+      lobbyCode.value = safeCode
+      currentPlayerId.value = safeName
+    } catch (err) {
+      error.value = err.message
+      console.error('[LobbyStore] Errore durante joinLobby:', err)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  function toggleReady() {
+    const newState = !currentPlayer.value?.ready
+    emit('lobby:player_ready', { ready: newState })
+  }
+
+  function startGame() {
+    if (!isHost.value) return
+
+    // 1. Assicuriamoci che il backend abbia i ruoli salvati prima di partire
+    const finalSetup = syncRoleSetup()
+    emit('lobby:update_settings', {
+      wolf_count: finalSetup.wolves,
+      seer_count: finalSetup.seers,
+    })
+
+    // 2. Diamo una frazione di secondo (100ms) al database Redis per 
+    // memorizzare i lupi, e poi diamo il segnale di inizio partita!
+    setTimeout(() => {
+      emit('lobby:start_game', {
+        lobby_code: lobbyCode.value,
+      })
+    }, 100)
+  }
+
+  function kickPlayer(targetId) {
+    if (!isHost.value) return
+    emit('kick_player', { lobby_code: lobbyCode.value, target_id: targetId })
+  }
+
+  function reset() {
+    lobbyCode.value = null
+    players.value = []
+    currentPlayerId.value = null
+    roleSetup.value = { wolves: 1, seers: 1 }
+    hostPlayerId.value = null
+    readyPlayerIds.value = []
+    listenersBound.value = false
+    error.value = null
+  }
+
+  function _initSocket() {
+    connect()
+  }
+
   return {
-    // state
-    lobbyCode, players, currentPlayerId, isLoading, error, isConnected,
-    // getters
-    currentPlayer, isHost, allReady, readyCount,
-    // actions
-    createLobby, joinLobby, toggleReady, startGame, kickPlayer, reset,
+    lobbyCode,
+    players,
+    currentPlayerId,
+    roleSetup,
+    isLoading,
+    error,
+    isConnected,
+    currentPlayer,
+    isHost,
+    isCurrentPlayerReady,
+    allReady,
+    readyCount,
+    readyProgress,
+    roleSummary,
+    maxWolves,
+    maxSeers,
+    createLobby,
+    joinLobby,
+    toggleReady,
+    adjustRole,
+    syncRoleSetup,
+    applyRoleSetup,
+    startGame,
+    kickPlayer,
+    reset,
+    listenToLobbyEvents,
   }
 })

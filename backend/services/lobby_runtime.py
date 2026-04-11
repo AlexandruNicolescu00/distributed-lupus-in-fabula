@@ -4,6 +4,7 @@ from core import state_store as rs
 from core.messages import EventType
 from models.game import Phase
 from services.lobby_logic import (
+    build_state_sync_payload,
     maybe_close_room_for_departing_host,
     set_player_ready,
     update_lobby_settings,
@@ -52,11 +53,19 @@ class LobbyRuntime:
             client_id,
             ready=bool(ready),
         )
-        await self._sync_room_state(room_id)
+        room_snapshot = await self._sync_room_state(room_id)
         await self._emit_authoritative_event(
             EventType.LOBBY_PLAYER_READY_CHANGED,
             room_id,
             ready_payload,
+        )
+        await self._emit_authoritative_event(
+            EventType.GAME_STATE_SYNC,
+            room_id,
+            build_state_sync_payload(
+                room_snapshot,
+                room_snapshot.get("players", []),
+            ),
         )
 
     async def handle_disconnect(self, room_id: str, client_id: str) -> None:
@@ -78,14 +87,15 @@ class LobbyRuntime:
         state = await rs.get_game_state(redis, room_id) or {}
         if state.get("phase", Phase.LOBBY.value) != Phase.LOBBY.value:
             raise ValueError("The game can only be started during LOBBY")
-        if state.get("host_id") != client_id:
+        host_id = state.get("host_id")
+        if host_id != client_id:
             raise ValueError("Only the host can start the game")
 
         ready_player_ids = set(state.get("ready_player_ids", []))
         missing_ready = [
             player_id
             for player_id in connected_player_ids
-            if player_id not in ready_player_ids
+            if player_id != host_id and player_id not in ready_player_ids
         ]
         if missing_ready:
             raise ValueError("All connected players must be ready before starting the game")
