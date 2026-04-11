@@ -529,7 +529,7 @@ async def resolve_night(
 ) -> dict:
     """
     Applies end-of-night actions in order:
-      1. Tally wolf votes → kill target (or no kill on tie)
+      1. Tally wolf votes → kill target (or random on tie)
       2. Deliver seer_result to seer (if they acted)
       3. Clean up wolf_votes, seer_action, and has_acted flags
 
@@ -556,14 +556,16 @@ async def resolve_night(
         max_votes = max(tally.values())
         leaders = [pid for pid, count in tally.items() if count == max_votes]
 
-        if len(leaders) == 1:
-            killed_player_id = leaders[0]
+        # FIX: Random selection on tie
+        if len(leaders) >= 1:
+            killed_player_id = random.choice(leaders)
             victim = await rs.get_player(r, game_id, killed_player_id)
             if victim and victim.alive:
                 victim.alive = False
                 await rs.set_player(r, game_id, victim)
                 logger.info(
-                    "Night kill | game=%s victim=%s", game_id, killed_player_id
+                    "Night kill | game=%s victim=%s (from leaders: %s)", 
+                    game_id, killed_player_id, leaders
                 )
             else:
                 killed_player_id = None  # already dead (shouldn't happen)

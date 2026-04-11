@@ -34,17 +34,21 @@ onMounted(async () => {
   game.listenToGameEvents()
   chat.listenToMessages()
 
-  let clientId = sessionStorage.getItem('client_id') || localStorage.getItem('client_id')
+  // FIX: Solo sessionStorage per evitare conflitti tra tab (il localStorage rompe il testing)
+  let clientId = sessionStorage.getItem('client_id')
   if (!clientId) {
     clientId = `user_${Math.random().toString(36).slice(2, 11)}`
     sessionStorage.setItem('client_id', clientId)
-    localStorage.setItem('client_id', clientId)
   }
 
   game.currentPlayerId = clientId
-  game.bootstrapFromLobby(lobby.players, clientId, lobby.roleSummary, lobbyCode)
+  
+  // FIX: Facciamo il bootstrap SOLO se i giocatori non ci sono già (evita reset ruoli segreti all'ingresso)
+  if (game.players.length === 0) {
+    game.bootstrapFromLobby(lobby.players, clientId, lobby.roleSummary, lobbyCode)
+  }
 
-  const wsUrl = import.meta.env.VITE_WS_URL || 'http://game.local'
+  const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:8000'
   connect(wsUrl, {
     auth: {
       client_id: clientId,
@@ -125,7 +129,9 @@ const roleLabel = computed(() => {
     [ROLES.WOLF]: { icon: '🐺', name: 'Lupo', desc: 'Elimina i villici e resta nascosto.' },
     [ROLES.SEER]: { icon: '🔮', name: 'Veggente', desc: 'Scopri chi sono i lupi.' },
   }
-  return map[game.myRole] ?? { icon: '❓', name: 'In attesa', desc: 'Il tuo ruolo verra rivelato presto.' }
+  // FIX: Normalizzazione a maiuscolo altrimenti mostra sempre "In attesa"
+  const normalizedRole = game.myRole ? game.myRole.toUpperCase() : null
+  return map[normalizedRole] ?? { icon: '❓', name: 'In attesa', desc: 'Il tuo ruolo verrà rivelato presto.' }
 })
 
 const canVote = computed(() => game.phase === PHASES.VOTING && game.isAlive && !myVote.value)
@@ -149,7 +155,7 @@ const ownPlayerCard = computed(() => {
   return {
     player_id: me.player_id,
     username: me.username,
-    role: me.role,
+    role: me.role ?? game.myRole,
     ready: true,
     alive: me.alive,
     connected: me.connected,
@@ -229,15 +235,79 @@ function handleRoomClosedConfirm() {
 
     <Transition name="night">
       <div v-if="showNightOverlay" class="night-overlay">
-        <div class="night-content">
-          <div class="night-moon">🌙</div>
-          <div class="night-title">La Notte è calata</div>
+        
+        <div v-if="game.isVillager" class="night-content role-villager">
+          <div class="night-moon">💤</div>
+          <div class="night-title">Stai dormendo</div>
           <div class="night-sub">
-            <template v-if="game.isWolf">Coordina l'attacco con i tuoi compagni lupi.</template>
-            <template v-else-if="game.isSeer">Usa i tuoi poteri per smascherare un lupo.</template>
-            <template v-else>Il villaggio dorme. Spera di risvegliarti domani.</template>
+            Sei un pacifico Contadino. La notte è buia e piena di terrori...
+            Spera solo di svegliarti vivo domattina.
           </div>
+          <div class="timer-display">Tempo all'alba: {{ game.secondsLeft ?? 0 }}s</div>
         </div>
+
+        <div v-else-if="game.isSeer" class="night-content role-seer">
+          <div class="night-moon seer-eye">🔮</div>
+          <div class="night-title">Sfera di Cristallo</div>
+          <div class="night-sub">
+            <span v-if="nightActionDone">Hai già avuto la tua visione per stanotte.</span>
+            <span v-else>Scegli una mente in cui curiosare per scoprire la sua vera natura.</span>
+          </div>
+          
+          <div class="action-grid" v-if="!nightActionDone">
+            <button 
+              v-for="player in visiblePlayers.filter(p => p.alive && p.player_id !== game.currentPlayerId)" 
+              :key="player.player_id"
+              class="target-btn seer-btn"
+              @click="castNightAction(player.player_id)"
+            >
+              Indaga {{ player.username }}
+            </button>
+          </div>
+
+          <div v-if="game.seerResult" class="vision-result">
+            La tua visione è chiara: <strong>{{ game.seerResult.targetName }}</strong> è della fazione dei {{ game.seerResult.role === ROLES.WOLF ? '🐺 Lupi' : '🧑‍🌾 Contadini' }}.
+          </div>
+
+          <div class="timer-display">Tempo all'alba: {{ game.secondsLeft ?? 0 }}s</div>
+        </div>
+
+        <div v-else-if="game.isWolf" class="night-content role-wolf">
+          <div class="night-moon wolf-claw">🐺</div>
+          <div class="night-title">L'ora della Caccia</div>
+          <div class="night-sub">
+            <span v-if="nightActionDone">In attesa dei tuoi fratelli...</span>
+            <span v-else>Decidi chi sarà la vittima stanotte.</span>
+          </div>
+
+          <div class="wolf-dashboard">
+            <div class="action-grid" v-if="!nightActionDone">
+               <button 
+                v-for="player in visiblePlayers.filter(p => p.alive && !game.wolfCompanions.some(w => w.player_id === p.player_id) && p.player_id !== game.currentPlayerId)" 
+                :key="player.player_id"
+                class="target-btn wolf-btn"
+                @click="castNightAction(player.player_id)"
+              >
+                Sbrana {{ player.username }}
+              </button>
+            </div>
+
+            <div class="wolf-chat-container">
+              <div class="wolf-chat-header">Chat del Branco</div>
+              <ChatBox /> 
+            </div>
+          </div>
+
+          <div class="timer-display">Tempo all'alba: {{ game.secondsLeft ?? 0 }}s</div>
+        </div>
+
+        <div v-else class="night-content">
+          <div class="night-moon">👻</div>
+          <div class="night-title">Il riposo eterno</div>
+          <div class="night-sub">Sei un fantasma. Goditi lo spettacolo.</div>
+          <div class="timer-display">Tempo all'alba: {{ game.secondsLeft ?? 0 }}s</div>
+        </div>
+
       </div>
     </Transition>
 
@@ -425,12 +495,6 @@ function handleRoomClosedConfirm() {
 
 .action-feedback { padding: 1rem; background: rgba(129, 140, 248, 0.1); border-radius: 10px; font-size: 0.85rem; border: 1px solid rgba(129, 140, 248, 0.2); }
 
-.night-overlay { position: fixed; inset: 0; background: rgba(5, 5, 20, 0.9); z-index: 100; display: flex; align-items: center; justify-content: center; pointer-events: none; }
-.night-content { text-align: center; color: #818cf8; }
-.night-moon { font-size: 4rem; margin-bottom: 1rem; animation: pulse 2s infinite; }
-.night-title { font-size: 2rem; margin-bottom: 0.75rem; }
-@keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
-
 .pause-banner { padding: 0.9rem 2rem; background: rgba(248,113,113,0.08); color: #fca5a5; border-bottom: 1px solid rgba(248,113,113,0.15); }
 
 .role-banner {
@@ -469,8 +533,46 @@ function handleRoomClosedConfirm() {
 .leave-game-btn:hover { background: rgba(248,113,113,0.15); border-color: rgba(248,113,113,0.6); }
 .leave-game-btn--sidebar { width: 100%; margin-top: auto; }
 
+/* ---- STILI NOTTE DIFFERENZIATI ---- */
+.night-overlay { position: fixed; inset: 0; background: rgba(5, 5, 20, 0.95); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); }
+.night-content { text-align: center; max-width: 800px; width: 100%; padding: 2rem; }
+
+/* Testi Generici Notte */
+.night-title { font-size: 2.5rem; margin-bottom: 0.5rem; font-family: 'Cinzel', serif; }
+.night-sub { font-size: 1.1rem; opacity: 0.8; margin-bottom: 2rem; }
+.timer-display { margin-top: 2rem; font-family: monospace; font-size: 1.2rem; background: rgba(0,0,0,0.5); padding: 0.5rem 1rem; display: inline-block; border-radius: 8px; }
+
+/* Colori specifici per ruolo */
+.role-villager { color: #94a3b8; }
+.role-seer { color: #c084fc; }
+.seer-eye { font-size: 5rem; animation: float 3s ease-in-out infinite; }
+.role-wolf { color: #fca5a5; }
+.wolf-claw { font-size: 5rem; text-shadow: 0 0 20px rgba(220,38,38,0.6); }
+
+@keyframes float { 0% { transform: translateY(0); } 50% { transform: translateY(-15px); } 100% { transform: translateY(0); } }
+
+/* Pulsanti Scelta */
+.action-grid { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; margin-bottom: 2rem; }
+.target-btn { padding: 1rem 2rem; border-radius: 12px; font-weight: bold; font-size: 1rem; cursor: pointer; transition: 0.2s; border: 2px solid transparent; }
+.seer-btn { background: rgba(192, 132, 252, 0.1); color: #c084fc; border-color: rgba(192, 132, 252, 0.3); }
+.seer-btn:hover { background: rgba(192, 132, 252, 0.3); transform: scale(1.05); }
+.wolf-btn { background: rgba(220, 38, 38, 0.1); color: #fca5a5; border-color: rgba(220, 38, 38, 0.3); }
+.wolf-btn:hover { background: rgba(220, 38, 38, 0.3); transform: scale(1.05); }
+
+/* Dashboard Lupo (Split Bottoni / Chat) */
+.wolf-dashboard { display: grid; grid-template-columns: 1fr 350px; gap: 2rem; align-items: start; text-align: left; }
+.wolf-chat-container { background: rgba(0,0,0,0.5); border: 1px solid rgba(220,38,38,0.2); border-radius: 16px; height: 400px; display: flex; flex-direction: column; overflow: hidden; pointer-events: auto; }
+.wolf-chat-header { background: rgba(220,38,38,0.15); padding: 0.8rem; font-weight: bold; text-align: center; border-bottom: 1px solid rgba(220,38,38,0.2); }
+
+/* Risultato Visione Veggente */
+.vision-result { padding: 1.5rem; background: rgba(192, 132, 252, 0.1); border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 12px; font-size: 1.2rem; animation: float 3s; }
+
 @media (max-width: 900px) {
   .game-body { grid-template-columns: 1fr; }
   .role-col { order: -1; }
+}
+
+@media (max-width: 800px) {
+  .wolf-dashboard { grid-template-columns: 1fr; }
 }
 </style>
