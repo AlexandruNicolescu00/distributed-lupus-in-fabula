@@ -21,12 +21,16 @@ const { connect, disconnect, emit, isConnected } = useSocket()
 const showRoleBanner = ref(false)
 const myVote = ref(null)
 const nightActionDone = ref(false)
-const showNightOverlay = ref(false)
 const showRoomClosedPopup = ref(false)
 const lobbyCode = route.params.id || lobby.lobbyCode
+
 const isCurrentUserHost = computed(() =>
   lobby.isHost || (game.hostId && game.hostId === game.currentPlayerId)
 )
+
+// Invece di un ref statico, usiamo una computed property per l'overlay notturno.
+// In questo modo, appena il ruolo arriva, l'interfaccia si aggiorna istantaneamente!
+const showNightOverlay = computed(() => game.phase === PHASES.NIGHT)
 
 onMounted(async () => {
   if (!lobbyCode) {
@@ -45,8 +49,6 @@ onMounted(async () => {
 
   game.currentPlayerId = clientId
   
-  // FIX 1: Facciamo il bootstrap SOLO se il gameStore è vuoto (es. hai premuto F5). 
-  // Altrimenti distruggiamo i dati freschi (come i ruoli) appena arrivati dal backend!
   if (game.players.length === 0) {
     game.bootstrapFromLobby(lobby.players, clientId, lobby.roleSummary, lobbyCode)
   }
@@ -78,7 +80,6 @@ onUnmounted(() => {
 watch(
   () => game.phase,
   (newPhase) => {
-    showNightOverlay.value = newPhase === PHASES.NIGHT
     myVote.value = null
     nightActionDone.value = false
 
@@ -132,10 +133,7 @@ const roleLabel = computed(() => {
     [ROLES.WOLF]: { icon: '🐺', name: 'Lupo', desc: 'Elimina i villici e resta nascosto.' },
     [ROLES.SEER]: { icon: '🔮', name: 'Veggente', desc: 'Scopri chi sono i lupi.' },
   }
-  // FIX 2: Il backend manda "wolf" in minuscolo, il frontend usa "WOLF". 
-  // Trasformiamo in maiuscolo per evitare il fallback all'infinito!
   const normalizedRole = game.myRole ? game.myRole.toUpperCase() : null
-  
   return map[normalizedRole] ?? { icon: '❓', name: 'In attesa', desc: 'Il tuo ruolo verrà rivelato presto.' }
 })
 
@@ -238,7 +236,13 @@ function handleRoomClosedConfirm() {
     <Transition name="night">
       <div v-if="showNightOverlay" class="night-overlay">
         
-        <div v-if="game.isVillager" class="night-content role-villager">
+        <div v-if="!game.myRole" class="night-content role-unknown">
+          <div class="night-moon">🎭</div>
+          <div class="night-title">Assegnazione Ruoli...</div>
+          <div class="night-sub">Chiudi gli occhi. Il tuo destino sta per essere deciso.</div>
+        </div>
+
+        <div v-else-if="game.isVillager" class="night-content role-villager">
           <div class="night-moon">💤</div>
           <div class="night-title">Stai dormendo</div>
           <div class="night-sub">
@@ -335,7 +339,7 @@ function handleRoomClosedConfirm() {
       ⚠️ Partita in pausa: {{ game.pauseReason || 'In attesa che i giocatori rientrino' }}...
     </div>
 
-    <div class="game-body">
+    <div class="game-body" v-show="!showNightOverlay">
       <section class="players-col">
         <div class="col-title">Popolazione <span>{{ visiblePlayers.filter((player) => player.alive).length }} vivi</span></div>
 
@@ -385,14 +389,14 @@ function handleRoomClosedConfirm() {
         <InfoBox title="Cronologia" :rows="sidebarRows" />
 
         <div v-if="game.isWolf && game.wolfCompanions.length" class="wolf-box">
-          <div class="wolf-box-title">Branchia</div>
+          <div class="wolf-box-title">Il Branco</div>
           <div v-for="wolf in game.wolfCompanions" :key="wolf.player_id" class="wolf-box-item">
             🐺 {{ wolf.username }}
           </div>
         </div>
 
         <div v-if="game.seerResult" class="action-feedback">
-          <p>🔮 Visione: <strong>{{ game.seerResult.targetName }}</strong> è {{ game.seerResult.role }}</p>
+          <p>🔮 Visione: <strong>{{ game.seerResult.targetName }}</strong> è {{ game.seerResult.role === ROLES.WOLF ? 'Lupo' : 'Contadino' }}</p>
         </div>
 
         <button class="leave-game-btn leave-game-btn--sidebar" @click="leaveGame">
@@ -545,6 +549,7 @@ function handleRoomClosedConfirm() {
 .timer-display { margin-top: 2rem; font-family: monospace; font-size: 1.2rem; background: rgba(0,0,0,0.5); padding: 0.5rem 1rem; display: inline-block; border-radius: 8px; }
 
 /* Colori specifici per ruolo */
+.role-unknown { color: #a1a1aa; }
 .role-villager { color: #94a3b8; }
 .role-seer { color: #c084fc; }
 .seer-eye { font-size: 5rem; animation: float 3s ease-in-out infinite; }
