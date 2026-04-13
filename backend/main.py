@@ -464,6 +464,51 @@ async def catch_all(event: str, sid: str, data: dict):
 
     payload = data if isinstance(data, dict) else {"raw": data}
     try:
+        # ===================================================================
+        # GESTIONE RIAVVIO PARTITA (Da ENDED a LOBBY)
+        # ===================================================================
+        if event in ("return_to_lobby", "play_again"):
+            logger.info("L'host ha richiesto il riavvio della partita | room=%s", room_id)
+            from core import state_store as rs  # Importiamo l'accesso diretto a Redis
+            r = _domain_redis()
+            
+            # 1. Resetta lo stato della stanza a LOBBY e pulisci le variabili di fine round
+            await rs.patch_game_state(
+                r, room_id, 
+                phase=Phase.LOBBY.value, 
+                winner=None, 
+                round=0, 
+                timer_end=None
+            )
+            
+            # 2. Resuscita i giocatori e pulisci i loro ruoli/voti/stato pronti
+            all_players = await rs.get_all_players(r, room_id)
+            for p in all_players.values():
+                p.alive = True
+                p.role = None
+                p.has_voted = False
+                p.has_acted = False
+                p.ready = False # Vogliamo che tutti debbano rimettere "pronto" manualmente
+                await rs.set_player(r, room_id, p)
+                
+            # 3. Sincronizza la memoria locale
+            await sync_lobby_room_state(r, state_store, room_id)
+            
+            # 4. Manda lo State Sync a TUTTI per aggiornare le UI all'istante
+            current_state = await state_store.get_state(room_id)
+            players_list = await state_store.get_players(room_id)
+            
+            sync_event = RedisEvent(
+                event_type=EventType.GAME_STATE_SYNC,
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload={"state": current_state or {}, "players": players_list},
+            )
+            ws_msg = WSMessage.from_redis_event(sync_event)
+            await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), room=room_id)
+            return
+        # ===================================================================
+
         if event == EventType.CAST_VOTE:
             await game_runtime.handle_cast_vote(room_id, client_id, payload)
             return
