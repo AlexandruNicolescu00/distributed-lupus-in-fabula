@@ -4,26 +4,30 @@
  *
  * Schermata di fine partita. Si compone di 3 momenti visivi in sequenza:
  *
- *   Momento 1 (subito)   → Annuncio grande del vincitore con animazione
- *   Momento 2 (2.8s)     → Rivelazione carte con ruoli di tutti i giocatori
- *   Momento 3 (5.5s)     → Statistiche: numeri + squadre affiancate
- *   Azioni    (6.5s)     → Pulsanti "Gioca ancora" e "Torna alla Home"
+ * Momento 1 (subito)   → Annuncio grande del vincitore con animazione
+ * Momento 2 (2.8s)     → Rivelazione carte con ruoli di tutti i giocatori
+ * Momento 3 (5.5s)     → Statistiche: numeri + squadre affiancate
+ * Azioni    (6.5s)     → Pulsanti "Gioca ancora" e "Torna alla Home"
  *
  * I dati vengono da gameStore (players, winner, round).
  * Il mock viene rimosso quando il backend emette game_ended con il
  * payload completo di GameEndedPayload (models/events.py).
  *
  * Navigazione verso questa view:
- *   - Da GameView quando arriva l'evento game_ended → router.push('/results')
- *   - Ora anche direttamente via URL per sviluppo: localhost:5173/results
+ * - Da GameView quando arriva l'evento game_ended → router.push('/results')
+ * - Ora anche direttamente via URL per sviluppo: localhost:5173/results
  */
 
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useGameStore, ROLES, WINNERS } from '@/stores/gameStore'
+import { useLobbyStore } from '@/stores/lobbyStore' 
+import { useSocket } from '@/composables/useSocket'
 
 const router = useRouter()
 const game   = useGameStore()
+const lobby  = useLobbyStore() 
+const { emit, disconnect } = useSocket()
 
 // ---------------------------------------------------------------------------
 // MOCK TEMPORANEO
@@ -103,6 +107,38 @@ function palette(role) {
 }
 
 // ---------------------------------------------------------------------------
+// AZIONI FINALI (Aggiunte per la gestione del riavvio e dell'uscita)
+// ---------------------------------------------------------------------------
+
+/**
+ * playAgain()
+ * Invia al backend l'ordine di riportare la stanza in LOBBY (se sei l'host)
+ * e naviga localmente alla schermata della lobby.
+ */
+function playAgain() {
+  if (lobby.isHost) {
+    console.log('[ResultsView] L\'host richiede il riavvio della stanza')
+    // Mandiamo l'evento al backend per resettare phase=LOBBY e i ruoli
+    emit('return_to_lobby', { room_id: lobby.lobbyCode })
+  }
+  // Navigazione del frontend verso la view della lobby
+  router.push('/lobby')
+}
+
+/**
+ * goHome()
+ * Pulisce tutti gli store locali, stacca il socket dal backend 
+ * (che rimuoverà il giocatore dalla stanza fisica) e torna alla schermata inziale.
+ */
+function goHome() {
+  console.log('[ResultsView] Il giocatore abbandona la partita')
+  game.reset()
+  lobby.reset()
+  disconnect()
+  router.push('/')
+}
+
+// ---------------------------------------------------------------------------
 // ICONE E NOMI DEI RUOLI
 // Usati nell'SVG della carta (icona centrale) e nel footer (nome ruolo).
 // ---------------------------------------------------------------------------
@@ -119,52 +155,31 @@ const roleName = {
 </script>
 
 <template>
-  <!--
-    La classe CSS theme--wolves / theme--village cambia il gradiente
-    dello sfondo a seconda di chi ha vinto.
-  -->
   <div class="results-root" :class="wolvesWon ? 'theme--wolves' : 'theme--village'">
 
-    <!-- Particelle stellate di sfondo (decorative, pointer-events: none) -->
     <div class="particles">
       <span v-for="n in 25" :key="n" class="particle" :style="{ '--i': n }"></span>
     </div>
 
     <div class="results-wrap">
 
-      <!-- =================================================================
-           MOMENTO 1 — ANNUNCIO VINCITORE
-           Sempre visibile, animazione di entrata con scale + translateY.
-           Il testo e il colore cambiano in base a wolvesWon.
-           ================================================================= -->
       <section class="moment-announce">
 
-        <!-- Emoji principale: lupo se vincono i lupi, alba se vince il villaggio -->
         <div class="announce-icon">{{ wolvesWon ? '🐺' : '🌅' }}</div>
 
-        <!-- Titolo grande del vincitore -->
         <div class="announce-label">
           {{ wolvesWon ? 'I Lupi hanno vinto!' : 'Il Villaggio ha vinto!' }}
         </div>
 
-        <!-- Sottotitolo narrativo -->
         <div class="announce-sub">
           {{ wolvesWon
             ? 'Il buio ha inghiottito il villaggio...'
             : 'La luce ha trionfato sull\'oscurità!' }}
         </div>
 
-        <!-- Durata della partita in round -->
         <div class="announce-rounds">Partita durata {{ game.round }} round</div>
       </section>
 
-      <!-- =================================================================
-           MOMENTO 2 — RIVELAZIONE CARTE
-           Appare dopo 2.8s. Ogni carta si "gira" con rotateY in sequenza
-           (animation-delay calcolato dall'indice del giocatore).
-           I giocatori morti hanno un overlay scuro con 💀.
-           I vincitori hanno il glow pulsante sul bordo della carta.
-           ================================================================= -->
       <Transition name="fade-up">
         <section v-if="showCards" class="moment-cards">
           <div class="section-title">Identità rivelate</div>
@@ -182,50 +197,38 @@ const roleName = {
                 '--delay': `${idx * 0.15}s`,             /* stagger animazione */
               }"
             >
-              <!-- SVG illustrazione carta con ruolo rivelato -->
               <div class="result-card__art">
                 <svg viewBox="0 0 120 160" xmlns="http://www.w3.org/2000/svg">
-                  <!-- Sfondo carta -->
                   <rect width="120" height="160" rx="8" :fill="palette(player.role).bg"/>
-                  <!-- Bordo interno -->
                   <rect x="6" y="6" width="108" height="148" rx="5"
                     fill="none" :stroke="palette(player.role).border"
                     stroke-width="0.8" opacity="0.5"/>
 
-                  <!-- Icona ruolo al centro — grande e visibile -->
                   <text x="60" y="82" text-anchor="middle"
                     font-size="42" :fill="palette(player.role).border" opacity="0.9">
                     {{ roleIcon[player.role] ?? '?' }}
                   </text>
 
-                  <!-- Nome ruolo in basso alla carta -->
                   <text x="60" y="142" text-anchor="middle"
                     font-size="8" font-family="Georgia,serif" letter-spacing="1.5"
                     :fill="palette(player.role).border" opacity="0.6">
                     {{ roleName[player.role]?.toUpperCase() ?? '?' }}
                   </text>
 
-                  <!-- Ornamenti decorativi agli angoli -->
                   <text x="11"  y="22"  font-size="9" font-family="serif" :fill="palette(player.role).border" opacity="0.5">♦</text>
                   <text x="109" y="22"  font-size="9" font-family="serif" :fill="palette(player.role).border" opacity="0.5" text-anchor="end">♦</text>
                   <text x="11"  y="154" font-size="9" font-family="serif" :fill="palette(player.role).border" opacity="0.5">♦</text>
                   <text x="109" y="154" font-size="9" font-family="serif" :fill="palette(player.role).border" opacity="0.5" text-anchor="end">♦</text>
 
-                  <!-- Linee ornamentali orizzontali -->
                   <line x1="20" y1="28"  x2="100" y2="28"  :stroke="palette(player.role).border" stroke-width="0.4" opacity="0.2"/>
                   <line x1="20" y1="128" x2="100" y2="128" :stroke="palette(player.role).border" stroke-width="0.4" opacity="0.2"/>
 
-                  <!--
-                    Overlay morto: rettangolo scuro semitrasparente +
-                    emoji 💀 al centro. Appare solo se player.alive === false.
-                  -->
                   <rect v-if="!player.alive" width="120" height="160" rx="8" fill="rgba(0,0,0,0.6)"/>
                   <text v-if="!player.alive" x="60" y="90" text-anchor="middle"
                     font-size="28" fill="rgba(255,255,255,0.2)">💀</text>
                 </svg>
               </div>
 
-              <!-- Footer sotto la carta: nome giocatore e stato vivo/eliminato -->
               <div class="result-card__footer">
                 <div class="result-card__name">{{ player.username }}</div>
                 <div class="result-card__status" :class="player.alive ? 'alive' : 'dead'">
@@ -233,11 +236,6 @@ const roleName = {
                 </div>
               </div>
 
-              <!--
-                Glow pulsante: appare solo sui giocatori della squadra vincitrice.
-                Se vincono i lupi → glow sui WOLF
-                Se vince il villaggio → glow su VILLAGER e SEER
-              -->
               <div
                 v-if="(wolvesWon && player.role === ROLES.WOLF) ||
                       (!wolvesWon && player.role !== ROLES.WOLF)"
@@ -248,18 +246,10 @@ const roleName = {
         </section>
       </Transition>
 
-      <!-- =================================================================
-           MOMENTO 3 — STATISTICHE
-           Appare dopo 5.5s. Due parti:
-           1. 4 stat-card con numeri chiave della partita
-           2. Pannello squadre affiancate (Lupi vs Villaggio)
-              La squadra vincitrice ha il bordo oro evidenziato.
-           ================================================================= -->
       <Transition name="fade-up">
         <section v-if="showStats" class="moment-stats">
           <div class="section-title">Riepilogo partita</div>
 
-          <!-- Griglia 4 numeri chiave -->
           <div class="stats-grid">
             <div class="stat-card">
               <div class="stat-value">{{ game.round }}</div>
@@ -279,26 +269,17 @@ const roleName = {
             </div>
           </div>
 
-          <!--
-            Pannello squadre:
-            - team--winner aggiunge bordo oro alla squadra vincitrice
-            - I seers vengono mostrati nel pannello villaggio con 🔮
-          -->
           <div class="teams-wrap">
-            <!-- Squadra lupi -->
             <div class="team team--wolves" :class="{ 'team--winner': wolvesWon }">
               <div class="team-title">🐺 Lupi</div>
               <div v-for="p in wolves" :key="p.player_id" class="team-player">
                 <span>{{ p.username }}</span>
-                <!-- ✓ = sopravvissuto, 💀 = eliminato -->
                 <span class="team-player-status">{{ p.alive ? '✓' : '💀' }}</span>
               </div>
             </div>
 
-            <!-- Separatore VS -->
             <div class="team-divider">VS</div>
 
-            <!-- Squadra villaggio (contadini + veggente) -->
             <div class="team team--village" :class="{ 'team--winner': !wolvesWon }">
               <div class="team-title">🧑‍🌾 Villaggio</div>
               <div
@@ -306,7 +287,6 @@ const roleName = {
                 :key="p.player_id"
                 class="team-player"
               >
-                <!-- 🔮 dopo il nome per identificare visivamente il veggente -->
                 <span>{{ p.username }} {{ p.role === ROLES.SEER ? '🔮' : '' }}</span>
                 <span class="team-player-status">{{ p.alive ? '✓' : '💀' }}</span>
               </div>
@@ -315,18 +295,17 @@ const roleName = {
         </section>
       </Transition>
 
-      <!-- =================================================================
-           AZIONI FINALI
-           Appaiono dopo 6.5s.
-           "Gioca ancora" → torna in lobby per una nuova partita
-           "Torna alla Home" → torna alla schermata iniziale
-           ================================================================= -->
       <Transition name="fade-up">
         <div v-if="showActions" class="final-actions">
-          <button class="btn-play-again" @click="router.push('/lobby')">
-            Gioca ancora
+          <button v-if="lobby.isHost" class="btn-play-again" @click="playAgain">
+            Gioca ancora (Riavvia Stanza)
           </button>
-          <button class="btn-home" @click="router.push('/')">
+          
+          <button v-else class="btn-play-again" @click="playAgain">
+            Torna in Lobby
+          </button>
+          
+          <button class="btn-home" @click="goHome">
             Torna alla Home
           </button>
         </div>
