@@ -21,9 +21,10 @@ const { connect, disconnect, emit, isConnected } = useSocket()
 const showRoleBanner = ref(false)
 const myVote = ref(null)
 const nightActionDone = ref(false)
-const showRoomClosedPopup = ref(false)
 const lobbyCode = route.params.id || lobby.lobbyCode
 
+// La computed per l'host non serve più per gestire logiche speciali di chiusura stanza,
+// la teniamo solo se dovesse servirti per altre funzioni future in GameView.
 const isCurrentUserHost = computed(() =>
   lobby.isHost || (game.hostId && game.hostId === game.currentPlayerId)
 )
@@ -86,24 +87,6 @@ watch(
     if (newPhase === PHASES.ENDED) {
       setTimeout(() => router.push(`/results/${lobbyCode}`), 3000)
     }
-  }
-)
-
-watch(
-  () => game.roomClosedAt,
-  (closedAt) => {
-    if (!closedAt) return
-
-    if (isCurrentUserHost.value) {
-      game.reset()
-      lobby.reset()
-      chat.reset()
-      disconnect()
-      router.push('/')
-      return
-    }
-
-    showRoomClosedPopup.value = true
   }
 )
 
@@ -190,21 +173,8 @@ function initials(name) {
   return (name ?? '?').slice(0, 2).toUpperCase()
 }
 
+// L'abbandono ora è uguale per tutti, senza privilegi per l'host.
 function leaveGame() {
-  if (isCurrentUserHost.value) {
-    game.emitRoomClosed(lobbyCode)
-    return
-  }
-
-  game.reset()
-  lobby.reset()
-  chat.reset()
-  disconnect()
-  router.push('/')
-}
-
-function handleRoomClosedConfirm() {
-  showRoomClosedPopup.value = false
   game.reset()
   lobby.reset()
   chat.reset()
@@ -215,15 +185,6 @@ function handleRoomClosedConfirm() {
 
 <template>
   <div class="game-root" :class="`phase--${game.phase.toLowerCase()}`">
-    <Transition name="fade">
-      <div v-if="showRoomClosedPopup" class="network-overlay">
-        <div class="room-closed-modal">
-          <div class="room-closed-title">Partita terminata</div>
-          <p>{{ game.roomClosedMessage || "L'host ha chiuso la partita." }}</p>
-          <button class="room-closed-btn" @click="handleRoomClosedConfirm">Torna alla home</button>
-        </div>
-      </div>
-    </Transition>
 
     <Transition name="fade">
       <div v-if="!isConnected" class="network-overlay">
@@ -400,7 +361,7 @@ function handleRoomClosedConfirm() {
         </div>
 
         <button class="leave-game-btn leave-game-btn--sidebar" @click="leaveGame">
-          {{ isCurrentUserHost ? 'Chiudi Partita' : 'Abbandona Partita' }}
+          Abbandona Partita
         </button>
       </aside>
     </div>
@@ -423,10 +384,6 @@ function handleRoomClosedConfirm() {
 .network-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 999; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .loader { border: 4px solid #f3f3f3; border-top: 4px solid #818cf8; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-bottom: 1rem; }
 @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-.room-closed-modal { max-width: 420px; margin: 0 1.5rem; padding: 1.6rem; background: #13131d; border: 1px solid rgba(248,113,113,0.3); border-radius: 16px; text-align: center; color: #e8e0d5; box-shadow: 0 16px 48px rgba(0,0,0,0.45); }
-.room-closed-title { font-family: 'Cinzel', serif; color: #f87171; font-size: 1.15rem; margin-bottom: 0.8rem; }
-.room-closed-btn { margin-top: 1rem; padding: 0.8rem 1.2rem; border: none; border-radius: 10px; background: #f87171; color: #07070f; font-weight: 700; cursor: pointer; }
 
 .game-body { flex: 1; display: grid; grid-template-columns: 300px 1fr 270px; overflow: hidden; }
 

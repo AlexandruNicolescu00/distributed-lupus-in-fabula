@@ -267,6 +267,7 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     await sio.emit(EventType.PLAYER_JOINED, ws_msg.model_dump(), room=room_id, skip_sid=sid)
     await pubsub_manager.publish(join_event)
     
+
 @sio.event
 async def disconnect(sid: str):
     """
@@ -288,12 +289,41 @@ async def disconnect(sid: str):
         )
         return
 
-    await mark_player_disconnected(_domain_redis(), room_id, client_id or sid)
+    # ── 🚨 LOGICA DI ABBANDONO A PARTITA IN CORSO ──
+    current_state = await state_store.get_state(room_id)
+    phase = current_state.get("phase") if current_state else Phase.LOBBY.value
+    is_midgame = phase not in (Phase.LOBBY.value, Phase.ENDED.value)
 
+    leaving_player = await get_player(_domain_redis(), room_id, client_id or sid)
+    player_name = leaving_player.username if leaving_player else (client_id or sid)
+
+    if is_midgame and leaving_player and leaving_player.alive:
+        # 1. Uccidiamo il giocatore che fugge (evita stalli e permette check vittoria)
+        leaving_player.alive = False
+        from core import state_store as rs
+        await rs.set_player(_domain_redis(), room_id, leaving_player)
+        
+        # 2. Notifichiamo tutti in chat
+        sys_msg_event = RedisEvent(
+            event_type=EventType.CHAT_MESSAGE,
+            room_id=room_id,
+            sender_id=INSTANCE_ID,
+            payload={
+                "senderId": "system",
+                "senderName": "Sistema",
+                "text": f"💨 {player_name} è fuggito dal villaggio nel bel mezzo della partita!",
+                "channel": "global",
+            },
+        )
+        await sio.emit(EventType.CHAT_MESSAGE, WSMessage.from_redis_event(sys_msg_event).model_dump(), room=room_id)
+        await pubsub_manager.publish(sys_msg_event)
+
+
+    # ── STANDARD DISCONNECT LOGIC ──
+    await mark_player_disconnected(_domain_redis(), room_id, client_id or sid)
     remaining = await state_store.remove_player(room_id, client_id or sid)
     await promote_host_if_needed(_domain_redis(), room_id, remaining)
     await sync_lobby_room_state(_domain_redis(), state_store, room_id)
-    leaving_player = await get_player(_domain_redis(), room_id, client_id or sid)
 
     leave_event = RedisEvent(
         event_type=EventType.PLAYER_LEFT,
@@ -313,6 +343,37 @@ async def disconnect(sid: str):
     if connection_manager.client_count(room_id) == 0:
         await pubsub_manager.unsubscribe_room(room_id)
         logger.info("Stanza vuota, unsubscribed da Redis | room=%s", room_id)
+        
+    # ── CONTROLLO VITTORIA ISTANTANEO (Se l'abbandono cambia le sorti) ──
+    if is_midgame:
+        from services.game_logic import check_winner, _end_game
+        from models.events import PhaseChangedPayload
+        r = _domain_redis()
+        winner = await check_winner(r, room_id)
+        if winner:
+            logger.info("Vittoria istantanea causata da disconnessione | room=%s winner=%s", room_id, winner.value)
+            result = {}
+            await _end_game(r, room_id, winner, current_state.get("round", 0), result)
+            
+            # Spara il cambio fase a ENDED
+            payload = PhaseChangedPayload(
+                phase=Phase.ENDED.value,
+                round=current_state.get("round", 0),
+                timer_end=None
+            )
+            await _emit_authoritative_event(EventType.PHASE_CHANGED, room_id, payload)
+            
+            # Forza il sync dello stato ai client (per fargli vedere i ruoli/morti aggiornati)
+            sync_state = await state_store.get_state(room_id)
+            sync_players = await state_store.get_players(room_id)
+            sync_event = RedisEvent(
+                event_type=EventType.GAME_STATE_SYNC,
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload={"state": sync_state or {}, "players": sync_players},
+            )
+            await sio.emit(EventType.GAME_STATE_SYNC, WSMessage.from_redis_event(sync_event).model_dump(), room=room_id)
+            _cancel_phase_timer(room_id)
 
 
 @sio.on("chat:message")
@@ -465,6 +526,13 @@ async def catch_all(event: str, sid: str, data: dict):
     payload = data if isinstance(data, dict) else {"raw": data}
     try:
         # ===================================================================
+        # BLOCCO ANTI-CHIUSURA FORZATA
+        # ===================================================================
+        if event in ("room_closed", "close_room"):
+            logger.warning("Tentativo bloccato di chiudere forzatamente la stanza | room=%s client=%s", room_id, client_id)
+            return
+
+        # ===================================================================
         # GESTIONE RIAVVIO PARTITA (Da ENDED a LOBBY)
         # ===================================================================
         if event in ("return_to_lobby", "play_again"):
@@ -480,6 +548,8 @@ async def catch_all(event: str, sid: str, data: dict):
                 round=0, 
                 timer_end=None
             )
+            # 1.5. Ripulisci i fantasmi disconnessi
+            await rs.clean_disconnected_players(r, room_id)
             
             # 2. Resuscita i giocatori e pulisci i loro ruoli/voti/stato pronti
             all_players = await rs.get_all_players(r, room_id)

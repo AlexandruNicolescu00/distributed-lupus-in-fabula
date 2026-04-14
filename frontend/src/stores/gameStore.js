@@ -43,8 +43,6 @@ export const useGameStore = defineStore('game', () => {
   const noEliminationReason = ref('')
   const voteMap = ref({})
   const gameEndPlayers = ref([])
-  const roomClosedAt = ref(0)
-  const roomClosedMessage = ref('')
   const listenersBound = ref(false)
   const { emit, on } = useSocket()
 
@@ -201,13 +199,6 @@ export const useGameStore = defineStore('game', () => {
     emit('seer_action', { seer_id: currentPlayerId.value, target_id: targetId })
   }
 
-  function emitRoomClosed(roomCode = currentRoomCode.value) {
-    emit('room_closed', {
-      lobby_code: roomCode,
-      reason: "L'host ha chiuso la partita.",
-    })
-  }
-
   function listenToGameEvents() {
     if (listenersBound.value) return
     listenersBound.value = true
@@ -320,12 +311,6 @@ export const useGameStore = defineStore('game', () => {
       if (payload.phase) phase.value = payload.phase
       if (payload.timer_end) timerEnd.value = payload.timer_end
     })
-
-    on('room_closed', (message) => {
-      const payload = extractPayload(message)
-      roomClosedMessage.value = payload.reason ?? "L'host ha chiuso la partita."
-      roomClosedAt.value = Date.now()
-    })
   }
 
   function reset() {
@@ -345,8 +330,6 @@ export const useGameStore = defineStore('game', () => {
     noEliminationReason.value = ''
     voteMap.value = {}
     gameEndPlayers.value = []
-    roomClosedAt.value = 0
-    roomClosedMessage.value = ''
     error.value = null
   }
 
@@ -386,8 +369,6 @@ export const useGameStore = defineStore('game', () => {
     noEliminationReason,
     voteMap,
     gameEndPlayers,
-    roomClosedAt,
-    roomClosedMessage,
     alivePlayers,
     deadPlayers,
     me,
@@ -406,7 +387,6 @@ export const useGameStore = defineStore('game', () => {
     vote,
     wolfVote,
     seerAction,
-    emitRoomClosed,
     listenToGameEvents,
     reset,
     PHASES,

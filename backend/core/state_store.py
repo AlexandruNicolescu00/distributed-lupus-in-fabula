@@ -143,8 +143,26 @@ async def get_all_players(r: aioredis.Redis, game_id: str) -> dict[str, Player]:
     return result
 
 
+async def delete_player(r: aioredis.Redis, game_id: str, player_id: str) -> None:
+    """Rimuove un singolo giocatore dal database del dominio."""
+    await r.hdel(key_players(game_id), player_id)
+
+
 async def delete_players(r: aioredis.Redis, game_id: str) -> None:
+    """Rimuove tutti i giocatori dal database del dominio."""
     await r.delete(key_players(game_id))
+
+
+async def clean_disconnected_players(r: aioredis.Redis, game_id: str) -> None:
+    """
+    Rimuove fisicamente dal database i giocatori che si sono disconnessi.
+    Utile a fine partita per ripulire la lobby dai 'fantasmi'.
+    """
+    players = await get_all_players(r, game_id)
+    disconnected = [pid for pid, p in players.items() if not p.connected]
+    if disconnected:
+        await r.hdel(key_players(game_id), *disconnected)
+        logger.info("Pulizia fantasmi completata | game=%s rimossi=%s", game_id, disconnected)
 
 
 async def record_vote(r: aioredis.Redis, game_id: str, voter_id: str, target_id: str) -> None:
