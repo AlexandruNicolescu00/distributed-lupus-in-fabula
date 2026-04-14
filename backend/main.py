@@ -469,6 +469,8 @@ game_runtime = GameRuntime(
     schedule_phase_timer=_schedule_phase_timer,
     cancel_phase_timer=_cancel_phase_timer,
 )
+game_runtime.schedule_phase_timer = _schedule_phase_timer # Fix timer assignment
+
 
 lobby_runtime = LobbyRuntime(
     get_redis=_domain_redis,
@@ -530,6 +532,67 @@ async def catch_all(event: str, sid: str, data: dict):
         # ===================================================================
         if event in ("room_closed", "close_room"):
             logger.warning("Tentativo bloccato di chiudere forzatamente la stanza | room=%s client=%s", room_id, client_id)
+            return
+
+        # ===================================================================
+        # KICK DI UN GIOCATORE (SOLO HOST)
+        # ===================================================================
+        if event == "kick_player":
+            target_id = payload.get("target_id")
+            if not target_id:
+                return
+            
+            # Recuperiamo i dati della lobby come dizionario per leggere "is_host"
+            current_players = await state_store.get_players(room_id)
+            host_data = next((p for p in current_players if p.get("player_id") == client_id), None)
+            
+            # 1. Verifica che chi richiede il kick sia davvero l'host
+            if not host_data or not (host_data.get("is_host") or host_data.get("isHost")):
+                logger.warning("Tentativo di kick da non-host bloccato | client=%s room=%s", client_id, room_id)
+                return
+                
+            logger.info("Host %s sta espellendo %s dalla stanza %s", client_id, target_id, room_id)
+            
+            r = _domain_redis()
+            from core import state_store as rs
+            
+            # 2. DISINTEGRAZIONE TOTALE DAI DUE DATABASE
+            await rs.delete_player(r, room_id, target_id) # 💥 Rimuove fisicamente dal DB profondo
+            remaining = await state_store.remove_player(room_id, target_id) # 💥 Rimuove dalla memoria in tempo reale della stanza
+            await sync_lobby_room_state(r, state_store, room_id)
+            
+            # 3. Aggiorna la lobby di tutti (così sparisce la sua carta immediatamente)
+            leave_event = RedisEvent(
+                event_type=EventType.PLAYER_LEFT,
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload={"client_id": target_id, "player": {"player_id": target_id}, "players": remaining},
+            )
+            await sio.emit(EventType.PLAYER_LEFT, WSMessage.from_redis_event(leave_event).model_dump(), room=room_id)
+            await pubsub_manager.publish(leave_event)
+            
+            # 4. Spedisci l'evento "kicked" in broadcast a tutta la stanza.
+            kick_payload = {"target_id": target_id, "reason": "Sei stato espulso dall'host."}
+            
+            await sio.emit("kicked", kick_payload, room=room_id)
+            kick_redis_event = RedisEvent(
+                event_type="kicked",
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload=kick_payload
+            )
+            await pubsub_manager.publish(kick_redis_event)
+            return
+            # Emetti localmente
+            await sio.emit("kicked", kick_payload, room=room_id)
+            # Pubblica su Redis per le altre istanze del cluster
+            kick_redis_event = RedisEvent(
+                event_type="kicked",
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload=kick_payload
+            )
+            await pubsub_manager.publish(kick_redis_event)
             return
 
         # ===================================================================

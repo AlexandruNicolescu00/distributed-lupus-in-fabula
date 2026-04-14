@@ -51,6 +51,21 @@ onMounted(async () => {
     router.push('/') // Ti rispediamo istantaneamente alla Home
   })
 
+  // In caso di "kick" dal server, controlliamo che il target siamo noi!
+  on('kicked', (message) => {
+    if (message.target_id === lobbyStore.currentPlayerId) {
+      console.warn('[LobbyView] Sei stato rimosso dalla lobby:', message.reason)
+      lobbyStore.error = message.reason || "Sei stato cacciato dall'host."
+      
+      // Svuotiamo la memoria del browser, così non prova a rientrare ricaricando la pagina!
+      sessionStorage.removeItem('client_id')
+      sessionStorage.removeItem('room_id')
+
+      disconnect()
+      router.push('/')
+    }
+  })
+
   // 4. CONNESSIONE AL BACKEND
   // Usiamo l'indirizzo del cluster o localhost. useSocket userà l'auth dal localStorage automaticamente.
   const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:8000'
@@ -92,7 +107,10 @@ function handleToggleReady() {
 }
 
 function handleKick(id)      { 
-  lobbyStore.kickPlayer(id) 
+  if (lobbyStore.isHost) {
+      console.log(`[LobbyView] Richiesta di kick per: ${id}`)
+      lobbyStore.kickPlayer(id) 
+  }
 }
 
 function changeRole(role, delta) {

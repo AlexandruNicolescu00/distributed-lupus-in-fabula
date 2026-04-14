@@ -330,7 +330,7 @@ export const useLobbyStore = defineStore('lobby', () => {
       syncRoleSetup()
     } catch (err) {
       error.value = err.message
-      throw err // Rilanciamo l'errore per farlo gestire all'interfaccia Vue
+      throw err 
     } finally {
       isLoading.value = false
     }
@@ -354,7 +354,7 @@ export const useLobbyStore = defineStore('lobby', () => {
     } catch (err) {
       error.value = err.message
       console.error('[LobbyStore] Errore durante joinLobby:', err)
-      throw err // Rilanciamo l'errore al componente
+      throw err 
     } finally {
       isLoading.value = false
     }
@@ -368,15 +368,12 @@ export const useLobbyStore = defineStore('lobby', () => {
   function startGame() {
     if (!isHost.value) return
 
-    // 1. Assicuriamoci che il backend abbia i ruoli salvati prima di partire
     const finalSetup = syncRoleSetup()
     emit('lobby:update_settings', {
       wolf_count: finalSetup.wolves,
       seer_count: finalSetup.seers,
     })
 
-    // 2. Diamo una frazione di secondo (100ms) al database Redis per 
-    // memorizzare i lupi, e poi diamo il segnale di inizio partita!
     setTimeout(() => {
       emit('lobby:start_game', {
         lobby_code: lobbyCode.value,
@@ -384,9 +381,10 @@ export const useLobbyStore = defineStore('lobby', () => {
     }, 100)
   }
 
+  // L'host espelle un giocatore
   function kickPlayer(targetId) {
     if (!isHost.value) return
-    emit('kick_player', { lobby_code: lobbyCode.value, target_id: targetId })
+    emit('kick_player', { target_id: targetId })
   }
 
   function reset() {
