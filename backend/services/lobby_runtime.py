@@ -91,11 +91,14 @@ class LobbyRuntime:
         if host_id != client_id:
             raise ValueError("Only the host can start the game")
 
+        #Leggiamo i giocatori veri dal database, non dai socket!
+        players_in_db = await rs.get_all_players(redis, room_id)
         ready_player_ids = set(state.get("ready_player_ids", []))
+        
         missing_ready = [
-            player_id
-            for player_id in connected_player_ids
-            if player_id != host_id and player_id not in ready_player_ids
+            pid for pid, p in players_in_db.items()
+            if p.connected and pid != host_id and pid not in ready_player_ids
         ]
+        
         if missing_ready:
-            raise ValueError("All connected players must be ready before starting the game")
+            raise ValueError(f"All connected players must be ready before starting the game.")

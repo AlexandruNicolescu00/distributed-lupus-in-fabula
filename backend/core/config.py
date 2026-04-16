@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 @dataclass(frozen=True)
 class PhaseDurations:
     lobby: int = 0
-    day: int = 120
+    day: int = 10
     voting: int = 60
     night: int = 45
     night_wolf: int = 25
@@ -47,7 +47,7 @@ class Settings(BaseSettings):
 
     # ── Durate fasi ──────────────────────────────
     phase_lobby: int = 0
-    phase_day: int = 120
+    phase_day: int = 10
     phase_voting: int = 60
     phase_night: int = 45
     phase_night_wolf: int = 25

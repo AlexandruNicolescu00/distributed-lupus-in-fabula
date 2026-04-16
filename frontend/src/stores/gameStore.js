@@ -65,7 +65,7 @@ export const useGameStore = defineStore('game', () => {
     return Math.max(0, Math.ceil(timerEnd.value - currentTime.value))
   })
 
-  const phaseDurations = { DAY: 120, VOTING: 60, NIGHT: 45 }
+  const phaseDurations = { DAY: 10, VOTING: 60, NIGHT: 45 }
   const timerProgress = computed(() => {
     const total = phaseDurations[phase.value]
     if (!total || !timerEnd.value) return 0

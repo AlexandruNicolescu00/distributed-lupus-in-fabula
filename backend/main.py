@@ -211,15 +211,26 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
         client_id = client_id or params.get("client_id") or str(uuid.uuid4())
         room_id   = room_id   or params.get("room_id",   "lobby")
 
-    # ── 🛡️ CONTROLLI DI SICUREZZA ───────────────────────────────────────────
+    # ──  CONTROLLI DI SICUREZZA ───────────────────────────────────────────
     
-    # 1. Controllo Partita in Corso
     current_state = await state_store.get_state(room_id)
     if current_state:
         phase = current_state.get("phase")
-        if phase and phase not in (Phase.LOBBY.value, Phase.ENDED.value):
-            logger.warning("Accesso negato: partita in corso | client=%s room=%s", client_id, room_id)
-            raise socketio.exceptions.ConnectionRefusedError("La partita è già in corso.")
+        
+        # Controlliamo se il giocatore era già in questa partita (utile se ricarica la pagina dei risultati)
+        existing_players = await state_store.get_players(room_id)
+        is_known_player = any(p.get("player_id") == client_id for p in existing_players)
+
+        # Se la fase non è la LOBBY iniziale
+        if phase and phase != Phase.LOBBY.value:
+            # Blocchiamo chiunque sia un giocatore "nuovo"
+            if not is_known_player:
+                if phase == Phase.ENDED.value:
+                    logger.warning("Accesso negato: partita terminata, in attesa di riavvio | client=%s room=%s", client_id, room_id)
+                    raise socketio.exceptions.ConnectionRefusedError("La partita è terminata. Attendi che l'host riavvii la lobby prima di entrare.")
+                else:
+                    logger.warning("Accesso negato: partita in corso | client=%s room=%s", client_id, room_id)
+                    raise socketio.exceptions.ConnectionRefusedError("La partita è già in corso.")
 
     # 2. Controllo Nickname Duplicato (Anti-clone / Anti-doppia scheda)
     if connection_manager.client_connections_in_room(room_id, client_id) > 0:
@@ -289,7 +300,7 @@ async def disconnect(sid: str):
         )
         return
 
-    # ── 🚨 LOGICA DI ABBANDONO A PARTITA IN CORSO ──
+    # ──  LOGICA DI ABBANDONO A PARTITA IN CORSO ──
     current_state = await state_store.get_state(room_id)
     phase = current_state.get("phase") if current_state else Phase.LOBBY.value
     is_midgame = phase not in (Phase.LOBBY.value, Phase.ENDED.value)
@@ -469,8 +480,6 @@ game_runtime = GameRuntime(
     schedule_phase_timer=_schedule_phase_timer,
     cancel_phase_timer=_cancel_phase_timer,
 )
-game_runtime.schedule_phase_timer = _schedule_phase_timer # Fix timer assignment
-
 
 lobby_runtime = LobbyRuntime(
     get_redis=_domain_redis,
@@ -575,17 +584,6 @@ async def catch_all(event: str, sid: str, data: dict):
             kick_payload = {"target_id": target_id, "reason": "Sei stato espulso dall'host."}
             
             await sio.emit("kicked", kick_payload, room=room_id)
-            kick_redis_event = RedisEvent(
-                event_type="kicked",
-                room_id=room_id,
-                sender_id=INSTANCE_ID,
-                payload=kick_payload
-            )
-            await pubsub_manager.publish(kick_redis_event)
-            return
-            # Emetti localmente
-            await sio.emit("kicked", kick_payload, room=room_id)
-            # Pubblica su Redis per le altre istanze del cluster
             kick_redis_event = RedisEvent(
                 event_type="kicked",
                 room_id=room_id,
