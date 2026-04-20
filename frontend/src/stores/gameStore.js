@@ -48,13 +48,13 @@ export const useGameStore = defineStore('game', () => {
 
   const alivePlayers = computed(() => players.value.filter((player) => player.alive))
   const deadPlayers = computed(() => players.value.filter((player) => !player.alive))
+  
   const me = computed(() => players.value.find((player) => player.player_id === currentPlayerId.value))
   const isAlive = computed(() => me.value?.alive ?? false)
   const isWolf = computed(() => myRole.value === ROLES.WOLF)
   const isSeer = computed(() => myRole.value === ROLES.SEER)
   const isVillager = computed(() => myRole.value === ROLES.VILLAGER)
 
-  // 1. Creiamo un "orologio" reattivo che batte ogni secondo
   const currentTime = ref(Date.now() / 1000)
   setInterval(() => {
     currentTime.value = Date.now() / 1000
@@ -69,7 +69,6 @@ export const useGameStore = defineStore('game', () => {
   const timerProgress = computed(() => {
     const total = phaseDurations[phase.value]
     if (!total || !timerEnd.value) return 0
-    // Calcoliamo la percentuale rimanente (da 100 a 0)
     return (secondsLeft.value / total) * 100
   })
 
@@ -96,7 +95,7 @@ export const useGameStore = defineStore('game', () => {
     return remotePlayers.map((player) => ({
       player_id: player.player_id ?? player.id,
       username: player.username ?? player.name ?? player.player_id ?? player.id,
-      role: player.role ? player.role.toUpperCase() : null, // FORZA UPPERCASE QUI
+      role: player.role ? player.role.toUpperCase() : null,
       alive: player.alive ?? true,
       connected: player.connected ?? true,
     }))
@@ -204,6 +203,15 @@ export const useGameStore = defineStore('game', () => {
     listenersBound.value = true
 
     const handleGameStart = (message = {}) => {
+      // 🧹 PULIZIA TOTALE DI INIZIO PARTITA: cancella i residui della partita scorsa
+      seerResult.value = null
+      wolfCompanions.value = []
+      voteMap.value = {}
+      winner.value = null
+      myRole.value = null // Fondamentale!
+      noElimination.value = false
+      noEliminationReason.value = ''
+      
       const payload = extractPayload(message)
       const incomingPlayers = payload.players?.length ? payload.players : players.value
       pendingRoleSetup.value = resolveRoleSetupFromState(
@@ -224,26 +232,34 @@ export const useGameStore = defineStore('game', () => {
     on('game_start', handleGameStart)
     on('start_game', handleGameStart)
 
-    // Snapshot completo per riconnessioni o F5
     on('game_state_sync', (message) => {
       const payload = extractPayload(message)
       if (payload.state) _applyState(payload.state)
       if (payload.players) players.value = normalizePlayers([...payload.players])
     })
 
-    // CAMBIO FASE - Il motore del gioco!
     on('phase_changed', (message) => {
       const payload = extractPayload(message)
-      console.log('[GameStore] Fase cambiata in:', payload.phase)
       phase.value = payload.phase
       round.value = payload.round
       timerEnd.value = payload.timer_end
+
+      // 🧹 AZZERAMENTO PALLINI A OGNI CAMBIO FASE
+      voteMap.value = {}
+      
+      // La visione del Veggente sparisce solo all'inizio di una NUOVA Notte
+      if (payload.phase === PHASES.NIGHT) {
+        seerResult.value = null
+      }
+      
+      if (payload.phase === PHASES.DAY || payload.phase === PHASES.NIGHT) {
+        noElimination.value = false
+        noEliminationReason.value = ''
+      }
     })
 
-    // RUOLO ASSEGNATO (Evento privato per te)
     on('role_assigned', (message) => {
       const payload = extractPayload(message)
-      console.log('[GameStore] Ruolo assegnato:', payload.role)
       myRole.value = payload.role
       if (payload.wolf_companions) {
         wolfCompanions.value = [...payload.wolf_companions]
@@ -257,19 +273,20 @@ export const useGameStore = defineStore('game', () => {
 
     on('player_eliminated', (message) => {
       const payload = extractPayload(message)
-      const player = players.value.find((entry) => entry.player_id === payload.player_id)
-      if (player) {
-        player.alive = false
-        player.role = payload.role
-      }
-      players.value = [...players.value] // Forza reattività Vue
+      players.value = players.value.map(p => 
+        p.player_id === payload.player_id 
+          ? { ...p, alive: false, role: payload.role || p.role } 
+          : p
+      )
     })
 
     on('player_killed', (message) => {
       const payload = extractPayload(message)
-      const player = players.value.find((entry) => entry.player_id === payload.player_id)
-      if (player) player.alive = false
-      players.value = [...players.value] // Forza reattività Vue
+      players.value = players.value.map(p => 
+        p.player_id === payload.player_id 
+          ? { ...p, alive: false } 
+          : p
+      )
     })
 
     on('seer_result', (message) => {
@@ -351,46 +368,10 @@ export const useGameStore = defineStore('game', () => {
   }
 
   return {
-    phase,
-    round,
-    players,
-    currentPlayerId,
-    hostId,
-    myRole,
-    wolfCompanions,
-    winner,
-    timerEnd,
-    isLoading,
-    error,
-    isPaused,
-    pauseReason,
-    seerResult,
-    noElimination,
-    noEliminationReason,
-    voteMap,
-    gameEndPlayers,
-    alivePlayers,
-    deadPlayers,
-    me,
-    isAlive,
-    isWolf,
-    isSeer,
-    isVillager,
-    secondsLeft,
-    timerProgress,
-    voteCount,
-    normalizeRoleSetup,
-    normalizePlayers,
-    bootstrapFromLobby,
-    loadState,
-    handleStateSync,
-    vote,
-    wolfVote,
-    seerAction,
-    listenToGameEvents,
-    reset,
-    PHASES,
-    ROLES,
-    WINNERS,
+    phase, round, players, currentPlayerId, hostId, myRole, wolfCompanions, winner, timerEnd,
+    isLoading, error, isPaused, pauseReason, seerResult, noElimination, noEliminationReason,
+    voteMap, gameEndPlayers, alivePlayers, deadPlayers, me, isAlive, isWolf, isSeer, isVillager,
+    secondsLeft, timerProgress, voteCount, normalizeRoleSetup, normalizePlayers, bootstrapFromLobby,
+    loadState, handleStateSync, vote, wolfVote, seerAction, listenToGameEvents, reset, PHASES, ROLES, WINNERS,
   }
 })

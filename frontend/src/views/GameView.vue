@@ -23,14 +23,10 @@ const myVote = ref(null)
 const nightActionDone = ref(false)
 const lobbyCode = route.params.id || lobby.lobbyCode
 
-// La computed per l'host non serve più per gestire logiche speciali di chiusura stanza,
-// la teniamo solo se dovesse servirti per altre funzioni future in GameView.
 const isCurrentUserHost = computed(() =>
   lobby.isHost || (game.hostId && game.hostId === game.currentPlayerId)
 )
 
-// Invece di un ref statico, usiamo una computed property per l'overlay notturno.
-// In questo modo, appena il ruolo arriva, l'interfaccia si aggiorna istantaneamente!
 const showNightOverlay = computed(() => game.phase === PHASES.NIGHT)
 
 onMounted(async () => {
@@ -38,7 +34,7 @@ onMounted(async () => {
     router.push('/')
     return
   }
- 
+  
   game.listenToGameEvents()
   chat.listenToMessages()
 
@@ -78,11 +74,22 @@ onUnmounted(() => {
   chat.reset()
 })
 
+// ---- IL WATCHER SUPREMO ----
 watch(
   () => game.phase,
   (newPhase) => {
+    // 1. Azzeriamo le azioni del turno
     myVote.value = null
     nightActionDone.value = false
+    
+    // 2. Puliamo SEMPRE i pallini dei voti al cambio fase (visivamente)
+    game.voteMap = {}
+
+    // 3. La visione del Veggente si cancella SOLO quando ricomincia una nuova Notte.
+    // In questo modo il Veggente può leggere il risultato per tutto il Giorno e la Votazione!
+    if (newPhase === PHASES.NIGHT) {
+      game.seerResult = null
+    }
 
     if (newPhase === PHASES.ENDED) {
       setTimeout(() => router.push(`/results/${lobbyCode}`), 3000)
@@ -120,19 +127,10 @@ const roleLabel = computed(() => {
   return map[normalizedRole] ?? { icon: '❓', name: 'In attesa', desc: 'Il tuo ruolo verrà rivelato presto.' }
 })
 
-const canVote = computed(() => game.phase === PHASES.VOTING && game.isAlive && !myVote.value)
-const canAct = computed(() => game.phase === PHASES.NIGHT && game.isAlive && (game.isWolf || game.isSeer) && !nightActionDone.value)
-
 const visiblePlayers = computed(() => {
   if (game.players.length > 0) return game.players
   return game.normalizePlayers(lobby.players)
 })
-
-const sidebarRows = computed(() => [
-  { label: 'Round', value: game.round || 1 },
-  { label: 'Vivi', value: visiblePlayers.value.filter((player) => player.alive).length },
-  { label: 'Eliminati', value: visiblePlayers.value.filter((player) => !player.alive).length },
-])
 
 const ownPlayerCard = computed(() => {
   const me = visiblePlayers.value.find((player) => player.player_id === game.currentPlayerId)
@@ -147,6 +145,16 @@ const ownPlayerCard = computed(() => {
     connected: me.connected,
   }
 })
+
+// Controllo sicurezza locale: Puoi votare/agire SOLO se la tua card dice che sei vivo
+const canVote = computed(() => game.phase === PHASES.VOTING && ownPlayerCard.value?.alive && !myVote.value)
+const canAct = computed(() => game.phase === PHASES.NIGHT && ownPlayerCard.value?.alive && (game.isWolf || game.isSeer) && !nightActionDone.value)
+
+const sidebarRows = computed(() => [
+  { label: 'Round', value: game.round || 1 },
+  { label: 'Vivi', value: visiblePlayers.value.filter((player) => player.alive).length },
+  { label: 'Eliminati', value: visiblePlayers.value.filter((player) => !player.alive).length },
+])
 
 function castVote(targetId) {
   if (!canVote.value || targetId === game.currentPlayerId) return
@@ -173,7 +181,6 @@ function initials(name) {
   return (name ?? '?').slice(0, 2).toUpperCase()
 }
 
-// L'abbandono ora è uguale per tutti, senza privilegi per l'host.
 function leaveGame() {
   game.reset()
   lobby.reset()
@@ -201,6 +208,13 @@ function leaveGame() {
           <div class="night-moon">🎭</div>
           <div class="night-title">Assegnazione Ruoli...</div>
           <div class="night-sub">Chiudi gli occhi. Il tuo destino sta per essere deciso.</div>
+        </div>
+
+        <div v-else-if="ownPlayerCard && !ownPlayerCard.alive" class="night-content">
+          <div class="night-moon">👻</div>
+          <div class="night-title">Il riposo eterno</div>
+          <div class="night-sub">Sei un fantasma. Goditi lo spettacolo senza interferire.</div>
+          <div class="timer-display">Tempo all'alba: {{ game.secondsLeft ?? 0 }}s</div>
         </div>
 
         <div v-else-if="game.isVillager" class="night-content role-villager">
@@ -265,13 +279,6 @@ function leaveGame() {
             </div>
           </div>
 
-          <div class="timer-display">Tempo all'alba: {{ game.secondsLeft ?? 0 }}s</div>
-        </div>
-
-        <div v-else class="night-content">
-          <div class="night-moon">👻</div>
-          <div class="night-title">Il riposo eterno</div>
-          <div class="night-sub">Sei un fantasma. Goditi lo spettacolo.</div>
           <div class="timer-display">Tempo all'alba: {{ game.secondsLeft ?? 0 }}s</div>
         </div>
 
@@ -356,7 +363,7 @@ function leaveGame() {
           </div>
         </div>
 
-        <div v-if="game.seerResult" class="action-feedback">
+        <div v-if="game.isSeer && game.seerResult" class="action-feedback">
           <p>🔮 Visione: <strong>{{ game.seerResult.targetName }}</strong> è {{ game.seerResult.role === ROLES.WOLF ? 'Lupo' : 'Contadino' }}</p>
         </div>
 
@@ -380,13 +387,10 @@ function leaveGame() {
     #07070f;
 }
 .game-header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 2rem; background: rgba(0,0,0,0.4); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(255,255,255,0.05); }
-
 .network-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 999; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .loader { border: 4px solid #f3f3f3; border-top: 4px solid #818cf8; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin-bottom: 1rem; }
 @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
 .game-body { flex: 1; display: grid; grid-template-columns: 300px 1fr 270px; overflow: hidden; }
-
 .col-title {
   display: flex;
   align-items: center;
@@ -396,29 +400,24 @@ function leaveGame() {
   letter-spacing: 0.04em;
   padding: 1rem 1rem 0;
 }
-
 .col-title span {
   font-family: 'Lato', sans-serif;
   font-size: 0.78rem;
   color: rgba(232,224,213,0.55);
 }
-
 .players-list { padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; overflow-y: auto; }
 .player-row { display: flex; align-items: center; gap: 1rem; padding: 0.8rem; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid transparent; transition: 0.2s; }
 .player-row.can-interact { cursor: pointer; }
 .player-row.can-interact:hover { border-color: #818cf8; background: rgba(129, 140, 248, 0.1); }
 .player-row.is-selected { border-color: #f87171; background: rgba(248, 113, 113, 0.1); }
 .player-row.is-dead { opacity: 0.4; filter: grayscale(1); }
-
 .p-avatar { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; }
 .p-info { flex: 1; display: flex; flex-direction: column; }
 .p-name { font-weight: 600; font-size: 0.95rem; }
 .p-tag { font-size: 0.7rem; color: #e8c87a; font-weight: bold; }
 .p-conn { font-size: 0.72rem; color: rgba(232,224,213,0.45); }
-
 .vote-badges { display: flex; gap: 4px; flex-wrap: wrap; }
 .vote-dot { width: 8px; height: 8px; background: #f87171; border-radius: 50%; box-shadow: 0 0 5px #f87171; }
-
 .role-col {
   padding: 1rem;
   display: flex;
@@ -437,29 +436,23 @@ function leaveGame() {
   border-radius: 12px;
   padding: 0.85rem 0.9rem;
 }
-
 .wolf-box {
   padding: 1rem;
   background: rgba(248,113,113,0.08);
   border: 1px solid rgba(248,113,113,0.15);
   border-radius: 14px;
 }
-
 .wolf-box-title {
   font-family: 'Cinzel', serif;
   color: #fca5a5;
   margin-bottom: 0.5rem;
 }
-
 .wolf-box-item {
   font-size: 0.9rem;
   color: rgba(232,224,213,0.85);
 }
-
-.action-feedback { padding: 1rem; background: rgba(129, 140, 248, 0.1); border-radius: 10px; font-size: 0.85rem; border: 1px solid rgba(129, 140, 248, 0.2); }
-
+.action-feedback { padding: 1rem; background: rgba(192, 132, 252, 0.1); border-radius: 10px; font-size: 0.85rem; border: 1px solid rgba(192, 132, 252, 0.3); }
 .pause-banner { padding: 0.9rem 2rem; background: rgba(248,113,113,0.08); color: #fca5a5; border-bottom: 1px solid rgba(248,113,113,0.15); }
-
 .role-banner {
   position: fixed;
   top: 1.5rem;
@@ -475,67 +468,39 @@ function leaveGame() {
   border: 1px solid rgba(232,200,122,0.18);
   box-shadow: 0 20px 40px rgba(0,0,0,0.45);
 }
-
-.role-banner-icon {
-  font-size: 1.8rem;
-}
-
-.role-banner-name {
-  font-family: 'Cinzel', serif;
-  color: #e8c87a;
-}
-
-.role-banner-desc {
-  font-size: 0.82rem;
-  color: rgba(232,224,213,0.72);
-}
-
+.role-banner-icon { font-size: 1.8rem; }
+.role-banner-name { font-family: 'Cinzel', serif; color: #e8c87a; }
+.role-banner-desc { font-size: 0.82rem; color: rgba(232,224,213,0.72); }
 .brand { font-family: 'Cinzel', serif; letter-spacing: 0.18rem; color: #e8c87a; display: flex; align-items: center; gap: 0.4rem; }
-
 .leave-game-btn { padding: 0.7rem 1rem; border: 1px solid rgba(248,113,113,0.35); border-radius: 10px; background: rgba(248,113,113,0.08); color: #fca5a5; cursor: pointer; font-weight: 600; }
 .leave-game-btn:hover { background: rgba(248,113,113,0.15); border-color: rgba(248,113,113,0.6); }
 .leave-game-btn--sidebar { width: 100%; margin-top: auto; }
-
-/* ---- STILI NOTTE DIFFERENZIATI ---- */
 .night-overlay { position: fixed; inset: 0; background: rgba(5, 5, 20, 0.95); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); }
 .night-content { text-align: center; max-width: 800px; width: 100%; padding: 2rem; }
-
-/* Testi Generici Notte */
 .night-title { font-size: 2.5rem; margin-bottom: 0.5rem; font-family: 'Cinzel', serif; }
 .night-sub { font-size: 1.1rem; opacity: 0.8; margin-bottom: 2rem; }
 .timer-display { margin-top: 2rem; font-family: monospace; font-size: 1.2rem; background: rgba(0,0,0,0.5); padding: 0.5rem 1rem; display: inline-block; border-radius: 8px; }
-
-/* Colori specifici per ruolo */
 .role-unknown { color: #a1a1aa; }
 .role-villager { color: #94a3b8; }
 .role-seer { color: #c084fc; }
 .seer-eye { font-size: 5rem; animation: float 3s ease-in-out infinite; }
 .role-wolf { color: #fca5a5; }
 .wolf-claw { font-size: 5rem; text-shadow: 0 0 20px rgba(220,38,38,0.6); }
-
 @keyframes float { 0% { transform: translateY(0); } 50% { transform: translateY(-15px); } 100% { transform: translateY(0); } }
-
-/* Pulsanti Scelta */
 .action-grid { display: flex; flex-wrap: wrap; gap: 1rem; justify-content: center; margin-bottom: 2rem; }
 .target-btn { padding: 1rem 2rem; border-radius: 12px; font-weight: bold; font-size: 1rem; cursor: pointer; transition: 0.2s; border: 2px solid transparent; }
 .seer-btn { background: rgba(192, 132, 252, 0.1); color: #c084fc; border-color: rgba(192, 132, 252, 0.3); }
 .seer-btn:hover { background: rgba(192, 132, 252, 0.3); transform: scale(1.05); }
 .wolf-btn { background: rgba(220, 38, 38, 0.1); color: #fca5a5; border-color: rgba(220, 38, 38, 0.3); }
 .wolf-btn:hover { background: rgba(220, 38, 38, 0.3); transform: scale(1.05); }
-
-/* Dashboard Lupo (Split Bottoni / Chat) */
 .wolf-dashboard { display: grid; grid-template-columns: 1fr 350px; gap: 2rem; align-items: start; text-align: left; }
 .wolf-chat-container { background: rgba(0,0,0,0.5); border: 1px solid rgba(220,38,38,0.2); border-radius: 16px; height: 400px; display: flex; flex-direction: column; overflow: hidden; pointer-events: auto; }
 .wolf-chat-header { background: rgba(220,38,38,0.15); padding: 0.8rem; font-weight: bold; text-align: center; border-bottom: 1px solid rgba(220,38,38,0.2); }
-
-/* Risultato Visione Veggente */
 .vision-result { padding: 1.5rem; background: rgba(192, 132, 252, 0.1); border: 1px solid rgba(192, 132, 252, 0.3); border-radius: 12px; font-size: 1.2rem; animation: float 3s; }
-
 @media (max-width: 900px) {
   .game-body { grid-template-columns: 1fr; }
   .role-col { order: -1; }
 }
-
 @media (max-width: 800px) {
   .wolf-dashboard { grid-template-columns: 1fr; }
 }
