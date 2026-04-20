@@ -301,7 +301,12 @@ class GameStateStore:
     async def delete_state(self, room_id: str) -> None:
         if not self._redis:
             return
-        await self._redis.delete(self._state_key(room_id), self._players_key(room_id))
+        await self._redis.delete(
+            self._state_key(room_id), 
+            self._players_key(room_id),
+            key_state(room_id),
+            key_players(room_id)
+        )
 
     # ── Registro player (AGGIORNATO) ──────────────────────────────────────────
 
@@ -327,8 +332,6 @@ class GameStateStore:
         """
         Aggiunge un player al registro della stanza. 
         Restituisce la lista aggiornata di oggetti player completi.
-        
-        CAMBIAMENTO CHIAVE: ora restituisce list[dict] invece di set[str]
         """
         if not self._redis:
             return [{
@@ -364,16 +367,15 @@ class GameStateStore:
 
     async def remove_player(self, room_id: str, client_id: str) -> list[dict[str, Any]]:
         """
-        Rimuove un player dal registro. 
+        Rimuove un player dal registro e dal dominio del gioco. 
         Restituisce la lista aggiornata di oggetti player.
-        
-        CAMBIAMENTO CHIAVE: ora restituisce list[dict]
         """
         if not self._redis:
             return []
         
-        key = self._players_key(room_id)
-        await self._redis.hdel(key, client_id)
+        # FIX: Rimozione da ENTRAMBI i registri
+        await self._redis.hdel(self._players_key(room_id), client_id)
+        await self._redis.hdel(key_players(room_id), client_id)
         
         # Se era l'host, promuovi in modo deterministico il player entrato prima.
         players = await self._get_players_list(room_id)
@@ -387,7 +389,7 @@ class GameStateStore:
             promoted_player["is_host"] = True
             promoted_player["ready"] = True
             await self._redis.hset(
-                key,
+                self._players_key(room_id),
                 promoted_player["player_id"],
                 json.dumps(promoted_player)
             )
@@ -403,7 +405,7 @@ class GameStateStore:
 
     async def update_player_ready(self, room_id: str, client_id: str, ready: bool) -> Optional[dict[str, Any]]:
         """
-        NUOVA FUNZIONE: Aggiorna lo stato ready di un player.
+        Aggiorna lo stato ready di un player.
         Restituisce l'oggetto player aggiornato o None se non trovato.
         """
         if not self._redis:
