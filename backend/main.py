@@ -247,17 +247,24 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     await pubsub_manager.subscribe_room(room_id)
 
     await ensure_domain_player(_domain_redis(), room_id, client_id)
-    await sync_lobby_room_state(_domain_redis(), state_store, room_id)
+    await state_store.add_player(room_id, client_id) # Aggiorna la cache preliminare
+    
+    # Generiamo lo snapshot definitivo della stanza 
+    # e lo usiamo COME FONTE ASSOLUTA per i "pronto" e per l'ordinamento.
+    current_state = await sync_lobby_room_state(_domain_redis(), state_store, room_id)
 
-    # Recupera stato persistente e lista player completa (list[dict])
-    players       = await state_store.add_player(room_id, client_id)
+    unified_players = sorted(
+        current_state.get("players", []),
+        key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+    )
+    current_state["players"] = unified_players
     
     # Invia state sync al solo client che si (ri)connette
     sync_event = RedisEvent(
         event_type=EventType.GAME_STATE_SYNC,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"state": current_state or {}, "players": players},
+        payload={"state": current_state or {}, "players": unified_players},
     )
     ws_msg = WSMessage.from_redis_event(sync_event)
     await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), to=sid)
@@ -266,12 +273,12 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     if game_runtime:
         await game_runtime.emit_role_assignment_for_player(room_id, client_id, sid)
 
-    # Notifica tutti gli altri client (locale + altre istanze via Redis)
+    # Notifica tutti gli altri client (locale + altre istanze via Redis) usando la LISTA UNIFICATA E ORDINATA
     join_event = RedisEvent(
         event_type=EventType.PLAYER_JOINED,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"client_id": client_id, "player": asdict(player) if player else {}, "players": players},
+        payload={"client_id": client_id, "player": asdict(player) if player else {}, "players": unified_players},
     )
     ws_msg = WSMessage.from_redis_event(join_event)
     
@@ -332,15 +339,21 @@ async def disconnect(sid: str):
 
     # ── STANDARD DISCONNECT LOGIC ──
     await mark_player_disconnected(_domain_redis(), room_id, client_id or sid)
-    remaining = await state_store.remove_player(room_id, client_id or sid)
-    await promote_host_if_needed(_domain_redis(), room_id, remaining)
-    await sync_lobby_room_state(_domain_redis(), state_store, room_id)
+    remaining_raw = await state_store.remove_player(room_id, client_id or sid)
+    await promote_host_if_needed(_domain_redis(), room_id, remaining_raw)
+    
+    # Generiamo snapshot e ordiniamo per il LEAVE
+    current_state = await sync_lobby_room_state(_domain_redis(), state_store, room_id)
+    unified_players = sorted(
+        current_state.get("players", []),
+        key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+    )
 
     leave_event = RedisEvent(
         event_type=EventType.PLAYER_LEFT,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"client_id": client_id, "player": asdict(leaving_player) if leaving_player else {}, "players": remaining},
+        payload={"client_id": client_id, "player": asdict(leaving_player) if leaving_player else {}, "players": unified_players},
     )
     ws_msg = WSMessage.from_redis_event(leave_event)
 
@@ -376,7 +389,11 @@ async def disconnect(sid: str):
             
             # Forza il sync dello stato ai client (per fargli vedere i ruoli/morti aggiornati)
             sync_state = await state_store.get_state(room_id)
-            sync_players = await state_store.get_players(room_id)
+            # Dobbiamo inviare i dati freschi ordinati
+            sync_players = sorted(
+                (await state_store.get_players(room_id)),
+                key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+            )
             sync_event = RedisEvent(
                 event_type=EventType.GAME_STATE_SYNC,
                 room_id=room_id,
@@ -566,16 +583,22 @@ async def catch_all(event: str, sid: str, data: dict):
             from core import state_store as rs
             
             # 2. DISINTEGRAZIONE TOTALE DAI DUE DATABASE
-            await rs.delete_player(r, room_id, target_id) # 💥 Rimuove fisicamente dal DB profondo
-            remaining = await state_store.remove_player(room_id, target_id) # 💥 Rimuove dalla memoria in tempo reale della stanza
-            await sync_lobby_room_state(r, state_store, room_id)
+            await rs.delete_player(r, room_id, target_id) #Rimuove fisicamente dal DB profondo
+            remaining_raw = await state_store.remove_player(room_id, target_id) #Rimuove dalla memoria in tempo reale della stanza
             
-            # 3. Aggiorna la lobby di tutti (così sparisce la sua carta immediatamente)
+            #Generiamo snapshot e ordiniamo per il KICK
+            current_state = await sync_lobby_room_state(r, state_store, room_id)
+            unified_players = sorted(
+                current_state.get("players", []),
+                key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+            )
+            
+            # 3. Aggiorna la lobby di tutti (così sparisce la sua carta immediatamente e ordinata)
             leave_event = RedisEvent(
                 event_type=EventType.PLAYER_LEFT,
                 room_id=room_id,
                 sender_id=INSTANCE_ID,
-                payload={"client_id": target_id, "player": {"player_id": target_id}, "players": remaining},
+                payload={"client_id": target_id, "player": {"player_id": target_id}, "players": unified_players},
             )
             await sio.emit(EventType.PLAYER_LEFT, WSMessage.from_redis_event(leave_event).model_dump(), room=room_id)
             await pubsub_manager.publish(leave_event)
@@ -607,7 +630,8 @@ async def catch_all(event: str, sid: str, data: dict):
                 phase=Phase.LOBBY.value, 
                 winner=None, 
                 round=0, 
-                timer_end=None
+                timer_end=None,
+                ready_player_ids=[] #  FORZA TUTTI A NON ESSERE PRONTI!
             )
             # 1.5. Ripulisci i fantasmi disconnessi
             await rs.clean_disconnected_players(r, room_id)
@@ -622,18 +646,19 @@ async def catch_all(event: str, sid: str, data: dict):
                 p.ready = False # Vogliamo che tutti debbano rimettere "pronto" manualmente
                 await rs.set_player(r, room_id, p)
                 
-            # 3. Sincronizza la memoria locale
-            await sync_lobby_room_state(r, state_store, room_id)
+            # 3. Sincronizza la memoria locale e ordina
+            current_state = await sync_lobby_room_state(r, state_store, room_id)
+            unified_players = sorted(
+                current_state.get("players", []),
+                key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+            )
             
             # 4. Manda lo State Sync a TUTTI per aggiornare le UI all'istante
-            current_state = await state_store.get_state(room_id)
-            players_list = await state_store.get_players(room_id)
-            
             sync_event = RedisEvent(
                 event_type=EventType.GAME_STATE_SYNC,
                 room_id=room_id,
                 sender_id=INSTANCE_ID,
-                payload={"state": current_state or {}, "players": players_list},
+                payload={"state": current_state or {}, "players": unified_players},
             )
             ws_msg = WSMessage.from_redis_event(sync_event)
             await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), room=room_id)

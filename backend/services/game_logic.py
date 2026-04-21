@@ -60,8 +60,14 @@ def _wolf_count(player_count: int) -> int:
     return 1
 
 
-def _default_role_counts(player_count: int) -> tuple[int, int]:
-    return _wolf_count(player_count), 1
+def _default_role_counts(total_players: int) -> tuple[int, int]:
+    """
+    Ritorna il bilanciamento automatico: (wolves_count, seers_count).
+    Cambiato per disabilitare l'aggiunta automatica del veggente!
+    """
+    # Prima calcolava il veggente automaticamente se c'erano >4 giocatori. Ora NO!
+    wolves = max(1, total_players // 4)
+    return (wolves, 0) # Ritorna sempre 0 veggenti di default
 
 
 def _validate_role_counts(player_count: int, wolf_count: int, seer_count: int) -> None:
