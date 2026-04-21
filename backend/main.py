@@ -337,9 +337,14 @@ async def disconnect(sid: str):
         await pubsub_manager.publish(sys_msg_event)
 
 
-    # ── STANDARD DISCONNECT LOGIC ──
+    # ── STANDARD DISCONNECT LOGIC (CON ELEZIONE HOST) ──
     await mark_player_disconnected(_domain_redis(), room_id, client_id or sid)
-    remaining_raw = await state_store.remove_player(room_id, client_id or sid)
+    
+    if phase == Phase.LOBBY.value:
+        remaining_raw = await state_store.remove_player(room_id, client_id or sid)
+    else:
+        remaining_raw = await state_store.set_player_disconnected(room_id, client_id or sid)
+        
     await promote_host_if_needed(_domain_redis(), room_id, remaining_raw)
     
     # Generiamo snapshot e ordiniamo per il LEAVE
@@ -633,8 +638,10 @@ async def catch_all(event: str, sid: str, data: dict):
                 timer_end=None,
                 ready_player_ids=[] #  FORZA TUTTI A NON ESSERE PRONTI!
             )
-            # 1.5. Ripulisci i fantasmi disconnessi
-            await rs.clean_disconnected_players(r, room_id)
+            
+            # 1.5. Ripulisci i fantasmi disconnessi DA ENTRAMBI I DATABASE!
+            await rs.clean_disconnected_players(r, room_id) # Elimina dal DB profondo (Game Logic)
+            await state_store.clean_disconnected_players(room_id) # Elimina dalla cache Socket.IO
             
             # 2. Resuscita i giocatori e pulisci i loro ruoli/voti/stato pronti
             all_players = await rs.get_all_players(r, room_id)
@@ -653,7 +660,7 @@ async def catch_all(event: str, sid: str, data: dict):
                 key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
             )
             
-            # 4. Manda lo State Sync a TUTTI per aggiornare le UI all'istante
+            # 4. Manda lo State Sync a TUTTI per aggiornare le UI all'istante (con i fantasmi spariti)
             sync_event = RedisEvent(
                 event_type=EventType.GAME_STATE_SYNC,
                 room_id=room_id,

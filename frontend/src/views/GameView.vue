@@ -74,7 +74,6 @@ onUnmounted(() => {
   chat.reset()
 })
 
-// ---- IL WATCHER SUPREMO ----
 watch(
   () => game.phase,
   (newPhase) => {
@@ -147,8 +146,8 @@ const ownPlayerCard = computed(() => {
 })
 
 // Controllo sicurezza locale: Puoi votare/agire SOLO se la tua card dice che sei vivo
-const canVote = computed(() => game.phase === PHASES.VOTING && ownPlayerCard.value?.alive && !myVote.value)
-const canAct = computed(() => game.phase === PHASES.NIGHT && ownPlayerCard.value?.alive && (game.isWolf || game.isSeer) && !nightActionDone.value)
+const canVote = computed(() => game.phase === PHASES.VOTING && ownPlayerCard.value?.alive)
+const canAct = computed(() => game.phase === PHASES.NIGHT && ownPlayerCard.value?.alive && (game.isWolf || game.isSeer))
 
 const sidebarRows = computed(() => [
   { label: 'Round', value: game.round || 1 },
@@ -158,12 +157,15 @@ const sidebarRows = computed(() => [
 
 function castVote(targetId) {
   if (!canVote.value || targetId === game.currentPlayerId) return
+  
+  // Aggiorna visivamente il voto
   myVote.value = targetId
   game.vote(lobbyCode, targetId)
 }
 
 function castNightAction(targetId) {
   if (!canAct.value) return
+  
   nightActionDone.value = true
   if (game.isWolf) {
     game.wolfVote(targetId)

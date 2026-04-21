@@ -106,20 +106,11 @@ export const useGameStore = defineStore('game', () => {
     let seers = Math.min(Math.max(roleSetup?.seers ?? 0, 0), safeTotal >= 5 ? 1 : 0)
     let wolves = Math.max(1, roleSetup?.wolves ?? 1)
 
-    const wolvesCap = Math.max(1, Math.floor((Math.max(safeTotal - seers, 0) - 1) / 2))
+    //Matematica anti-vittoria 1a Notte 
+    const wolvesCap = Math.max(1, Math.floor((safeTotal - 2) / 2))
     wolves = Math.min(wolves, wolvesCap)
 
     let villagers = Math.max(0, safeTotal - wolves - seers)
-
-    while (villagers <= wolves && wolves > 1) {
-      wolves -= 1
-      villagers = Math.max(0, safeTotal - wolves - seers)
-    }
-
-    while (villagers <= wolves && seers > 0) {
-      seers -= 1
-      villagers = Math.max(0, safeTotal - wolves - seers)
-    }
 
     return { wolves, seers, villagers }
   }
@@ -203,12 +194,11 @@ export const useGameStore = defineStore('game', () => {
     listenersBound.value = true
 
     const handleGameStart = (message = {}) => {
-      // 🧹 PULIZIA TOTALE DI INIZIO PARTITA: cancella i residui della partita scorsa
       seerResult.value = null
       wolfCompanions.value = []
       voteMap.value = {}
       winner.value = null
-      myRole.value = null // Fondamentale!
+      myRole.value = null 
       noElimination.value = false
       noEliminationReason.value = ''
       
@@ -244,10 +234,8 @@ export const useGameStore = defineStore('game', () => {
       round.value = payload.round
       timerEnd.value = payload.timer_end
 
-      // 🧹 AZZERAMENTO PALLINI A OGNI CAMBIO FASE
       voteMap.value = {}
       
-      // La visione del Veggente sparisce solo all'inizio di una NUOVA Notte
       if (payload.phase === PHASES.NIGHT) {
         seerResult.value = null
       }

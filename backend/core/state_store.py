@@ -162,7 +162,7 @@ async def clean_disconnected_players(r: aioredis.Redis, game_id: str) -> None:
     disconnected = [pid for pid, p in players.items() if not p.connected]
     if disconnected:
         await r.hdel(key_players(game_id), *disconnected)
-        logger.info("Pulizia fantasmi completata | game=%s rimossi=%s", game_id, disconnected)
+        logger.info("Pulizia fantasmi completata nel dominio | game=%s rimossi=%s", game_id, disconnected)
 
 
 async def record_vote(r: aioredis.Redis, game_id: str, voter_id: str, target_id: str) -> None:
@@ -258,10 +258,6 @@ class GameStateStore:
         return time.time()
 
     def _sort_players(self, players: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """
-        Ordina i player in modo deterministico.
-        Priorita: ordine di ingresso in lobby, poi player_id come fallback.
-        """
         return sorted(
             players,
             key=lambda player: (
@@ -308,10 +304,9 @@ class GameStateStore:
             key_players(room_id)
         )
 
-    # ── Registro player (AGGIORNATO) ──────────────────────────────────────────
+    # ── Registro player ───────────────────────────────────────────────────────
 
     async def _get_players_list(self, room_id: str) -> list[dict[str, Any]]:
-        """Helper interno: restituisce la lista completa di oggetti player."""
         if not self._redis:
             return []
         
@@ -323,32 +318,18 @@ class GameStateStore:
                 player_obj = json.loads(player_json)
                 players.append(player_obj)
             except json.JSONDecodeError:
-                logger.warning(f"Player data corrotto per {client_id} in {room_id}")
                 continue
 
         return self._sort_players(players)
 
     async def add_player(self, room_id: str, client_id: str) -> list[dict[str, Any]]:
-        """
-        Aggiunge un player al registro della stanza. 
-        Restituisce la lista aggiornata di oggetti player completi.
-        """
         if not self._redis:
-            return [{
-                "player_id": client_id,
-                "name": client_id,
-                "ready": True,
-                "is_host": True,
-                "connected": True,
-                "joined_at": self._now(),
-            }]
+            return []
         
         key = self._players_key(room_id)
-        # Determina se questo player è l'host (primo ad entrare)
         current_count = await self._redis.hlen(key)
         is_host = (current_count == 0)
         
-        # Crea l'oggetto player completo
         player_data = {
             "player_id": client_id,
             "name": client_id,
@@ -358,26 +339,18 @@ class GameStateStore:
             "joined_at": self._now(),
         }
         
-        # Salva come JSON nella hash Redis
         await self._redis.hset(key, client_id, json.dumps(player_data))
         await self._redis.expire(key, STATE_TTL)
         
-        # Restituisci tutti i player
         return await self._get_players_list(room_id)
 
     async def remove_player(self, room_id: str, client_id: str) -> list[dict[str, Any]]:
-        """
-        Rimuove un player dal registro e dal dominio del gioco. 
-        Restituisce la lista aggiornata di oggetti player.
-        """
         if not self._redis:
             return []
         
-        # FIX: Rimozione da ENTRAMBI i registri
         await self._redis.hdel(self._players_key(room_id), client_id)
         await self._redis.hdel(key_players(room_id), client_id)
         
-        # Se era l'host, promuovi in modo deterministico il player entrato prima.
         players = await self._get_players_list(room_id)
 
         if not players:
@@ -397,17 +370,65 @@ class GameStateStore:
 
         return players
 
+    async def set_player_disconnected(self, room_id: str, client_id: str) -> list[dict[str, Any]]:
+        if not self._redis:
+            return []
+        
+        key = self._players_key(room_id)
+        player_json = await self._redis.hget(key, client_id)
+        
+        if player_json:
+            player_data = json.loads(player_json)
+            player_data["connected"] = False
+            was_host = player_data.get("is_host", False)
+            
+            if was_host:
+                player_data["is_host"] = False
+                
+            await self._redis.hset(key, client_id, json.dumps(player_data))
+            
+            if was_host:
+                players = await self._get_players_list(room_id)
+                connected_players = [p for p in players if p.get("connected")]
+                
+                if connected_players:
+                    new_host = self._sort_players(connected_players)[0]
+                    new_host["is_host"] = True
+                    new_host["ready"] = True
+                    await self._redis.hset(key, new_host["player_id"], json.dumps(new_host))
+
+        return await self._get_players_list(room_id)
+
+    async def clean_disconnected_players(self, room_id: str) -> list[dict[str, Any]]:
+        """
+        Rimuove fisicamente dalla memoria WS i giocatori che si sono disconnessi.
+        Fondamentale eseguirlo al momento di 'play_again' / 'return_to_lobby'.
+        """
+        if not self._redis:
+            return []
+        
+        key = self._players_key(room_id)
+        players_raw = await self._redis.hgetall(key)
+        disconnected_ids = []
+        
+        for client_id, player_json in players_raw.items():
+            try:
+                player_data = json.loads(player_json)
+                if not player_data.get("connected", True):
+                    disconnected_ids.append(client_id)
+            except json.JSONDecodeError:
+                continue
+
+        if disconnected_ids:
+            await self._redis.hdel(key, *disconnected_ids)
+            logger.info("GameStateStore: rimossi definitivamente i fantasmi %s in room %s", disconnected_ids, room_id)
+            
+        return await self._get_players_list(room_id)
+
     async def get_players(self, room_id: str) -> list[dict[str, Any]]:
-        """
-        Restituisce gli oggetti player completi della stanza.
-        """
         return await self._get_players_list(room_id)
 
     async def update_player_ready(self, room_id: str, client_id: str, ready: bool) -> Optional[dict[str, Any]]:
-        """
-        Aggiorna lo stato ready di un player.
-        Restituisce l'oggetto player aggiornato o None se non trovato.
-        """
         if not self._redis:
             return None
         
@@ -415,7 +436,6 @@ class GameStateStore:
         player_json = await self._redis.hget(key, client_id)
         
         if not player_json:
-            logger.warning(f"Player {client_id} non trovato in {room_id}")
             return None
         
         try:
@@ -427,5 +447,4 @@ class GameStateStore:
             
             return player_data
         except json.JSONDecodeError:
-            logger.error(f"Dati corrotti per player {client_id}")
             return None

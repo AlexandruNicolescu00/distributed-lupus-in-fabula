@@ -108,7 +108,7 @@ export const useLobbyStore = defineStore('lobby', () => {
     let wolves = Math.max(1, source?.wolves ?? 1)
 
     // Blocca i lupi se sono troppi rispetto ai contadini
-    const wolvesCap = Math.max(1, Math.floor((Math.max(safeTotal - seers, 0) - 1) / 2))
+    const wolvesCap = Math.max(1, Math.floor((safeTotal - 2) / 2))
     wolves = Math.min(wolves, wolvesCap)
 
     let villagers = Math.max(0, safeTotal - wolves - seers)
