@@ -2,6 +2,7 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useLobbyStore } from '@/stores/lobbyStore'
+import castleBg from '@/assets/home3.png'
 
 const router = useRouter()
 const lobbyStore = useLobbyStore()
@@ -50,26 +51,21 @@ function validateCode() {
 
 // ---- AZIONI ----
 async function createLobby() {
-  // 1. Controllo locale immediato
   if (!validateName()) return
 
-  // 2. Pulizia errori
   nameError.value = ''
   lobbyStore.error = null
 
   try {
-    // 3. Creazione tramite lo store
     await lobbyStore.createLobby(playerName.value)
     router.push('/lobby')
   } catch (err) {
-    // 4. Se lo store si lamenta, mostriamo l'errore
     nameError.value = err.message
     lobbyStore.error = null
   }
 }
 
 async function joinLobby() {
-  // Uso l'operatore || invece di | per un corretto cortocircuito logico
   const isNameValid = validateName()
   const isCodeValid = validateCode()
   if (!isNameValid || !isCodeValid) return
@@ -82,13 +78,12 @@ async function joinLobby() {
     await lobbyStore.joinLobby(lobbyCode.value, playerName.value)
     router.push('/lobby')
   } catch (err) {
-    // Se l'errore contiene la parola "codice" o "stanza", lo mettiamo sotto il codice
     if (err.message.toLowerCase().includes("codice") || err.message.toLowerCase().includes("stanza")) {
       codeError.value = err.message
     } else {
       nameError.value = err.message
     }
-    lobbyStore.error = null 
+    lobbyStore.error = null
   }
 }
 
@@ -103,15 +98,16 @@ function selectMode(selected) {
 <template>
   <div class="home-bg">
     <div class="bg-layer">
-      <div class="moon"></div>
-      <div v-for="n in 30" :key="n" class="star" :style="{ '--i': n }"></div>
+      <img :src="castleBg" alt="" class="bg-image" />
+      <div class="bg-scrim"></div>
+
+      <!-- nebbia animata SOPRA l'immagine per darle movimento -->
       <div class="fog fog-1"></div>
       <div class="fog fog-2"></div>
     </div>
 
     <main class="home-wrap">
       <header class="hero" :class="{ 'hero--shrink': mode !== null }">
-        <div class="wolf-icon">🐺</div>
         <h1 class="title">
           <span class="title-main">LUPUS</span>
           <span class="title-sub">in fabula</span>
@@ -121,12 +117,12 @@ function selectMode(selected) {
         </p>
       </header>
 
-        <Transition name="fade">
+      <Transition name="fade">
         <div v-if="lobbyStore.error && mode === null" class="server-error" style="width: 100%; text-align: center; margin-bottom: 1rem;">
           {{ lobbyStore.error }}
         </div>
       </Transition>
-      
+
       <section v-if="mode === null" class="mode-select">
         <button class="mode-card mode-card--create" @click="selectMode('create')">
           <span class="mode-icon">🏰</span>
@@ -238,38 +234,25 @@ function selectMode(selected) {
   pointer-events: none;
   z-index: 0;
 }
-
-/* Luna */
-.moon {
+.bg-image {
   position: absolute;
-  top: 8%;
-  right: 12%;
-  width: 90px;
-  height: 90px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 35%, #fff8e7, #e8c87a 40%, #b8942a);
-  box-shadow: 0 0 40px rgba(232,200,122,0.3), 0 0 80px rgba(232,200,122,0.1);
-  animation: moonPulse 6s ease-in-out infinite alternate;
-}
-@keyframes moonPulse {
-  from { box-shadow: 0 0 40px rgba(232,200,122,0.3), 0 0 80px rgba(232,200,122,0.1); }
-  to   { box-shadow: 0 0 60px rgba(232,200,122,0.5), 0 0 120px rgba(232,200,122,0.2); }
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
 }
 
-/* Stelle */
-.star {
+/* Velo scuro per far risaltare i testi sopra l'immagine */
+.bg-scrim {
   position: absolute;
-  width: 2px; height: 2px;
-  border-radius: 50%;
-  background: #fff;
-  left: calc(var(--i) * 3.2% + 2%);
-  top:  calc(var(--i) * 2.8% + 5%);
-  opacity: calc(0.2 + (var(--i) * 0.025));
-  animation: twinkle calc(2s + var(--i) * 0.3s) ease-in-out infinite alternate;
-}
-@keyframes twinkle {
-  from { opacity: 0.1; transform: scale(1); }
-  to   { opacity: 0.9; transform: scale(1.5); }
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(6,6,14,0.55) 0%,
+    rgba(6,6,14,0.15) 35%,
+    rgba(6,6,14,0.65) 100%
+  );
 }
 
 /* Nebbia */
@@ -314,20 +297,7 @@ function selectMode(selected) {
   transition: all 0.4s ease;
 }
 .hero--shrink .tagline { display: none; }
-.hero--shrink .wolf-icon { font-size: 2.5rem; }
 .hero--shrink .title-main { font-size: 2rem; }
-
-.wolf-icon {
-  font-size: 4.5rem;
-  display: block;
-  margin-bottom: 0.5rem;
-  filter: drop-shadow(0 0 20px rgba(232,200,122,0.4));
-  animation: wolfFloat 4s ease-in-out infinite alternate;
-}
-@keyframes wolfFloat {
-  from { transform: translateY(0); }
-  to   { transform: translateY(-8px); }
-}
 
 .title {
   display: flex;
@@ -342,24 +312,26 @@ function selectMode(selected) {
   letter-spacing: 0.15em;
   color: #e8c87a;
   line-height: 1;
-  text-shadow: 0 0 30px rgba(232,200,122,0.3);
+  text-shadow: 0 2px 14px rgba(0,0,0,0.9), 0 0 30px rgba(232,200,122,0.3);
   transition: font-size 0.4s;
 }
 .title-sub {
   font-family: 'Cinzel', serif;
   font-size: 0.85rem;
   letter-spacing: 0.35em;
-  color: rgba(232,200,122,0.45);
+  color: rgba(232,200,122,0.75);
   text-transform: uppercase;
   font-weight: 700;
+  text-shadow: 0 1px 8px rgba(0,0,0,0.8);
 }
 
 .tagline {
   margin-top: 1rem;
   font-size: 1.1rem;
   font-style: italic;
-  color: rgba(232,224,213,0.45);
+  color: rgba(232,224,213,0.85);
   letter-spacing: 0.02em;
+  text-shadow: 0 1px 8px rgba(0,0,0,0.85);
 }
 
 /* ---- MODE SELECT ---- */
@@ -378,7 +350,8 @@ function selectMode(selected) {
 
 .mode-card {
   width: 100%;
-  background: rgba(255,255,255,0.03);
+  background: rgba(8, 8, 18, 0.55);
+  backdrop-filter: blur(4px);
   border: 1px solid rgba(255,255,255,0.08);
   border-radius: 14px;
   padding: 1.5rem 1.8rem;
@@ -394,7 +367,7 @@ function selectMode(selected) {
 }
 .mode-card:hover {
   border-color: rgba(232,200,122,0.35);
-  background: rgba(232,200,122,0.05);
+  background: rgba(232,200,122,0.08);
   transform: translateY(-2px);
 }
 .mode-card--create:hover { box-shadow: 0 8px 30px rgba(139,0,0,0.25); }
@@ -414,16 +387,17 @@ function selectMode(selected) {
 }
 .mode-desc {
   font-size: 0.85rem;
-  color: rgba(232,224,213,0.45);
+  color: rgba(232,224,213,0.8);
   font-style: italic;
 }
 
 .mode-divider {
   font-size: 0.8rem;
-  color: rgba(232,224,213,0.25);
+  color: rgba(232,224,213,0.6);
   letter-spacing: 0.15em;
   text-transform: uppercase;
   padding: 0.8rem 0;
+  text-shadow: 0 1px 6px rgba(0,0,0,0.8);
 }
 
 /* ---- FORM PANEL ---- */
@@ -432,13 +406,18 @@ function selectMode(selected) {
   display: flex;
   flex-direction: column;
   gap: 1.2rem;
+  background: rgba(8, 8, 18, 0.6);
+  border: 1px solid rgba(232, 200, 122, 0.12);
+  border-radius: 18px;
+  padding: 1.6rem;
+  backdrop-filter: blur(6px);
   animation: fadeUp 0.35s ease both;
 }
 
 .back-btn {
   background: none;
   border: none;
-  color: rgba(232,224,213,0.35);
+  color: rgba(232,224,213,0.6);
   font-family: 'Crimson Text', serif;
   font-size: 0.9rem;
   cursor: pointer;
@@ -447,7 +426,7 @@ function selectMode(selected) {
   transition: color 0.2s;
   letter-spacing: 0.05em;
 }
-.back-btn:hover { color: rgba(232,224,213,0.7); }
+.back-btn:hover { color: rgba(232,224,213,0.9); }
 
 .form-title {
   font-family: 'Cinzel', serif;
@@ -463,7 +442,7 @@ function selectMode(selected) {
   font-size: 0.75rem;
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(232,200,122,0.5);
+  color: rgba(232,200,122,0.85);
 }
 
 .field-input {
@@ -477,7 +456,7 @@ function selectMode(selected) {
   outline: none;
   transition: border-color 0.2s, background 0.2s;
 }
-.field-input::placeholder { color: rgba(232,224,213,0.25); }
+.field-input::placeholder { color: rgba(232,224,213,0.5); }
 .field-input:focus {
   border-color: rgba(232,200,122,0.4);
   background: rgba(255,255,255,0.06);

@@ -5,7 +5,10 @@ import { useGameStore, PHASES, ROLES } from '@/stores/gameStore'
 import { useLobbyStore } from '@/stores/lobbyStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useSocket } from '@/composables/useSocket'
-
+import wolfNight   from '@/assets/wolf_night1.png'
+import farmerNight from '@/assets/farmer_night1.png'
+import seerNight   from '@/assets/seer_night1.png'
+import RoleIcon from '@/components/RoleIcons.vue'
 import ChatBox from '@/components/ChatBox.vue'
 import PhaseTimer from '@/components/PhaseTimer.vue'
 import InfoBox from '@/components/InfoBox.vue'
@@ -154,7 +157,24 @@ const sidebarRows = computed(() => [
   { label: 'Vivi', value: visiblePlayers.value.filter((player) => player.alive).length },
   { label: 'Eliminati', value: visiblePlayers.value.filter((player) => !player.alive).length },
 ])
+const nightBgStyle = computed(() => {
+  // I morti vedono la schermata "fantasma": sfondo scuro neutro
+  if (ownPlayerCard.value && !ownPlayerCard.value.alive) return {}
 
+  let url = null
+  if (game.isWolf)          url = wolfNight
+  else if (game.isSeer)     url = seerNight
+  else if (game.isVillager) url = farmerNight
+
+  if (!url) return {}  // ruolo non ancora assegnato → sfondo di default
+
+  return {
+    backgroundImage: `linear-gradient(rgba(5,5,20,0.70), rgba(5,5,20,0.88)), url(${url})`,
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+    backgroundRepeat: 'no-repeat',
+  }
+})
 function castVote(targetId) {
   if (!canVote.value || targetId === game.currentPlayerId) return
   
@@ -204,7 +224,7 @@ function leaveGame() {
     </Transition>
 
     <Transition name="night">
-      <div v-if="showNightOverlay" class="night-overlay">
+      <div v-if="showNightOverlay" class="night-overlay" :style="nightBgStyle">
         
         <div v-if="!game.myRole" class="night-content role-unknown">
           <div class="night-moon">🎭</div>
@@ -289,8 +309,7 @@ function leaveGame() {
 
     <Transition name="banner">
       <div v-if="showRoleBanner" class="role-banner">
-        <span class="role-banner-icon">{{ roleLabel.icon }}</span>
-        <div>
+          <RoleIcon :role="(game.myRole || '').toUpperCase()" :size="38" />        <div>
           <div class="role-banner-name">Sei il {{ roleLabel.name }}</div>
           <div class="role-banner-desc">{{ roleLabel.desc }}</div>
         </div>
@@ -470,15 +489,22 @@ function leaveGame() {
   border: 1px solid rgba(232,200,122,0.18);
   box-shadow: 0 20px 40px rgba(0,0,0,0.45);
 }
-.role-banner-icon { font-size: 1.8rem; }
-.role-banner-name { font-family: 'Cinzel', serif; color: #e8c87a; }
+.role-banner-icon { width: 38px; height: 38px; object-fit: contain; }.role-banner-name { font-family: 'Cinzel', serif; color: #e8c87a; }
 .role-banner-desc { font-size: 0.82rem; color: rgba(232,224,213,0.72); }
 .brand { font-family: 'Cinzel', serif; letter-spacing: 0.18rem; color: #e8c87a; display: flex; align-items: center; gap: 0.4rem; }
 .leave-game-btn { padding: 0.7rem 1rem; border: 1px solid rgba(248,113,113,0.35); border-radius: 10px; background: rgba(248,113,113,0.08); color: #fca5a5; cursor: pointer; font-weight: 600; }
 .leave-game-btn:hover { background: rgba(248,113,113,0.15); border-color: rgba(248,113,113,0.6); }
 .leave-game-btn--sidebar { width: 100%; margin-top: auto; }
 .night-overlay { position: fixed; inset: 0; background: rgba(5, 5, 20, 0.95); z-index: 100; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px); }
-.night-content { text-align: center; max-width: 800px; width: 100%; padding: 2rem; }
+.night-content {
+  text-align: center;
+  max-width: 800px;
+  width: 100%;
+  padding: 2.5rem 2rem;
+  background: rgba(8, 8, 18, 0.55);
+  border: 1px solid rgba(232, 200, 122, 0.15);
+  border-radius: 20px;
+  backdrop-filter: blur(6px); }
 .night-title { font-size: 2.5rem; margin-bottom: 0.5rem; font-family: 'Cinzel', serif; }
 .night-sub { font-size: 1.1rem; opacity: 0.8; margin-bottom: 2rem; }
 .timer-display { margin-top: 2rem; font-family: monospace; font-size: 1.2rem; background: rgba(0,0,0,0.5); padding: 0.5rem 1rem; display: inline-block; border-radius: 8px; }

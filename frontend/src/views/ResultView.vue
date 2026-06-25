@@ -328,11 +328,26 @@ const roleName = {
   overflow-x: hidden;
   transition: background 2s ease;
 }
-/* Sfondo rosso scuro per vittoria lupi */
-.theme--wolves  { background: radial-gradient(ellipse at 50% 0%, rgba(139,0,0,0.4) 0%, #07010a 60%); }
-/* Sfondo verde scuro per vittoria villaggio */
-.theme--village { background: radial-gradient(ellipse at 50% 0%, rgba(22,101,52,0.35) 0%, #010a07 60%); }
-
+.theme--wolves {
+  background:
+    linear-gradient(rgba(7,1,10,0.35), rgba(7,1,10,0.55)),
+    radial-gradient(ellipse at 50% 0%, rgba(139,0,0,0.35) 0%, rgba(7,1,10,0) 55%),
+    url('../assets/wolf_result1.png');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+.theme--village {
+  background:
+    linear-gradient(rgba(1,10,7,0.32), rgba(1,10,7,0.52)),
+    radial-gradient(ellipse at 50% 0%, rgba(22,101,52,0.30) 0%, rgba(1,10,7,0) 55%),
+    url('../assets/farmer_result1.png');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
 /* ---- PARTICELLE STELLATE ---- */
 .particles { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
 .particle {

@@ -7,6 +7,7 @@ import { useSocket } from '@/composables/useSocket'
 import { useClipboard } from '@/composables/useClipboard'
 import PlayerCard from '@/components/PlayerCard.vue'
 import InfoBox    from '@/components/InfoBox.vue'
+import Lobby1 from '@/assets/Lobby1.png'
 
 // ---- SETUP ROUTING E STORES ----
 const router     = useRouter()
@@ -171,7 +172,10 @@ const settingsRows = computed(() => [
 
 <template>
   <div class="lobby-root">
-    
+    <div class="lobby-bg">
+      <img :src="Lobby1" alt="" class="lobby-bg-img" />
+      <div class="lobby-bg-scrim"></div>
+    </div>
     <Transition name="fade">
       <div v-if="!isConnected" class="conn-overlay">
         <div class="spinner"></div>
@@ -327,8 +331,41 @@ const settingsRows = computed(() => [
 
 <style scoped>
 .lobby-root { min-height: 100vh; background: #07070f; color: #e8e0d5; font-family: 'Lato', sans-serif; overflow-x: hidden; }
-.lobby-container { max-width: 1100px; margin: 0 auto; padding: 2rem; display: flex; flex-direction: column; gap: 2rem; }
-
+.lobby-container {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  position: relative;   /* AGGIUNTO */
+  z-index: 1;           /* AGGIUNTO */
+}
+.lobby-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.lobby-bg-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  filter: blur(2px) brightness(0.7);  /* sfoca e scurisce → l'occhio va sulle card */
+}
+.lobby-bg-scrim {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    rgba(7,7,15,0.78) 0%,
+    rgba(7,7,15,0.55) 40%,
+    rgba(7,7,15,0.82) 100%
+  );
+}
 /* Overlay Connessione */
 .conn-overlay { position: fixed; inset: 0; background: rgba(7,7,15,0.95); z-index: 1000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; }
 .spinner { width: 40px; height: 40px; border: 3px solid rgba(232, 200, 122, 0.1); border-top-color: #e8c87a; border-radius: 50%; animation: spin 1s linear infinite; }
