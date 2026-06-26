@@ -3,43 +3,52 @@
  * ResultsView.vue
  *
  * Schermata di fine partita. Si compone di 3 momenti visivi in sequenza:
+ *   Momento 1 (subito) → Annuncio vincitore
+ *   Momento 2 (2.8s)   → Rivelazione carte
+ *   Momento 3 (5.5s)   → Statistiche + squadre
+ *   Azioni    (6.5s)   → Pulsanti finali
  *
- * Momento 1 (subito)   → Annuncio grande del vincitore con animazione
- * Momento 2 (2.8s)     → Rivelazione carte con ruoli di tutti i giocatori
- * Momento 3 (5.5s)     → Statistiche: numeri + squadre affiancate
- * Azioni    (6.5s)     → Pulsanti "Gioca ancora" e "Torna alla Home"
- *
- * I dati vengono da gameStore (players, winner, round).
- * Il mock viene rimosso quando il backend emette game_ended con il
- * payload completo di GameEndedPayload (models/events.py).
- *
- * Navigazione verso questa view:
- * - Da GameView quando arriva l'evento game_ended → router.push('/results')
- * - Ora anche direttamente via URL per sviluppo: localhost:5173/results
+ * IMPORTANTE: il risultato (vincitore, giocatori, round) viene CONGELATO
+ * al mount in ref locali. Così, quando l'host riavvia la stanza e il backend
+ * resetta lo store (phase=LOBBY, winner=null), questa schermata NON cambia
+ * scenario: continua a mostrare il risultato reale finché non si naviga via.
  */
 
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useGameStore, ROLES, WINNERS } from '@/stores/gameStore'
-import { useLobbyStore } from '@/stores/lobbyStore' 
+import { useGameStore, ROLES, WINNERS, PHASES } from '@/stores/gameStore'
+import { useLobbyStore } from '@/stores/lobbyStore'
 import { useSocket } from '@/composables/useSocket'
 
 const router = useRouter()
 const game   = useGameStore()
-const lobby  = useLobbyStore() 
+const lobby  = useLobbyStore()
 const { emit, disconnect } = useSocket()
 
 // ---------------------------------------------------------------------------
-// MOCK TEMPORANEO
-// Simula uno stato di fine partita per sviluppo senza backend.
-// Da rimuovere quando GameView naviga qui dopo aver ricevuto game_ended.
+// STATO SEQUENZA ANIMAZIONI
 // ---------------------------------------------------------------------------
+const showCards   = ref(false)
+const showStats   = ref(false)
+const showActions = ref(false)
+
+// ---------------------------------------------------------------------------
+// RISULTATO CONGELATO (snapshot al mount)
+// Questi ref vengono riempiti una volta sola e NON dipendono più dallo store.
+// ---------------------------------------------------------------------------
+const wolvesWon     = ref(false)
+const finalPlayers  = ref([])
+const finalRound    = ref(0)
+
 onMounted(() => {
+  // -------------------------------------------------------------------------
+  // MOCK TEMPORANEO (solo sviluppo senza backend)
+  // Da rimuovere quando GameView naviga qui dopo aver ricevuto game_ended.
+  // -------------------------------------------------------------------------
   if (!game.currentPlayerId) {
-    game.winner = WINNERS.WOLVES   // 'WOLVES' | 'VILLAGERS'
-    game.round  = 4                // numero di round giocati
+    game.winner = WINNERS.WOLVES
+    game.round  = 4
     game.players = [
-      // Ogni giocatore ha player_id, username, role (ROLES.*), alive (bool)
       { player_id: 'p1', username: 'Tu',     role: ROLES.VILLAGER, alive: false },
       { player_id: 'p2', username: 'Marco',  role: ROLES.WOLF,     alive: true  },
       { player_id: 'p3', username: 'Sofia',  role: ROLES.SEER,     alive: false },
@@ -49,52 +58,42 @@ onMounted(() => {
     ]
   }
 
-  // ---------------------------------------------------------------------------
-  // SEQUENZA ANIMAZIONI
-  // Ogni setTimeout attiva il prossimo momento visivo.
-  // I valori di delay sono calibrati per dare tempo di leggere ogni sezione.
-  // ---------------------------------------------------------------------------
-  setTimeout(() => { showCards.value   = true }, 2800)  // Momento 2: carte
-  setTimeout(() => { showStats.value   = true }, 5500)  // Momento 3: statistiche
-  setTimeout(() => { showActions.value = true }, 6500)  // Pulsanti finali
+  // 🔒 CONGELIAMO il risultato adesso, prima di qualunque reset dello store
+  wolvesWon.value    = game.winner === WINNERS.WOLVES
+  finalPlayers.value = [...game.players]
+  finalRound.value   = game.round
+
+  // Sequenza animazioni
+  setTimeout(() => { showCards.value   = true }, 2800)
+  setTimeout(() => { showStats.value   = true }, 5500)
+  setTimeout(() => { showActions.value = true }, 6500)
 })
 
 // ---------------------------------------------------------------------------
-// STATO SEQUENZA
-// Ogni ref controlla la visibilità di un momento tramite v-if + Transition.
+// Quando l'host riavvia la stanza, il backend riporta la fase a LOBBY:
+// gli altri giocatori escono dai risultati invece di vedere lo scenario cambiare.
 // ---------------------------------------------------------------------------
-const showCards   = ref(false)  // mostra la griglia carte
-const showStats   = ref(false)  // mostra statistiche e squadre
-const showActions = ref(false)  // mostra i pulsanti finali
+watch(
+  () => game.phase,
+  (newPhase) => {
+    if (newPhase === PHASES.LOBBY || newPhase === 'LOBBY') {
+      router.push('/lobby')
+    }
+  }
+)
 
 // ---------------------------------------------------------------------------
-// COMPUTED — VINCITORE
-// wolvesWon determina il tema colore (rosso vs verde) e i testi visualizzati.
+// SQUADRE E STATISTICHE — calcolate sui dati CONGELATI
 // ---------------------------------------------------------------------------
-const wolvesWon = computed(() => game.winner === WINNERS.WOLVES)
+const wolves    = computed(() => finalPlayers.value.filter(p => p.role === ROLES.WOLF))
+const villagers = computed(() => finalPlayers.value.filter(p => p.role === ROLES.VILLAGER))
+const seers     = computed(() => finalPlayers.value.filter(p => p.role === ROLES.SEER))
 
-// ---------------------------------------------------------------------------
-// COMPUTED — SQUADRE
-// Dividono game.players per ruolo per il pannello squadre nel Momento 3.
-// ---------------------------------------------------------------------------
-const wolves    = computed(() => game.players.filter(p => p.role === ROLES.WOLF))
-const villagers = computed(() => game.players.filter(p => p.role === ROLES.VILLAGER))
-const seers     = computed(() => game.players.filter(p => p.role === ROLES.SEER))
-
-// ---------------------------------------------------------------------------
-// COMPUTED — STATISTICHE
-// Numeri mostrati nelle 4 stat-card del Momento 3.
-// ---------------------------------------------------------------------------
-const survivorsCount  = computed(() => game.players.filter(p => p.alive).length)
-const eliminatedCount = computed(() => game.players.filter(p => !p.alive).length)
+const survivorsCount  = computed(() => finalPlayers.value.filter(p => p.alive).length)
+const eliminatedCount = computed(() => finalPlayers.value.filter(p => !p.alive).length)
 
 // ---------------------------------------------------------------------------
 // PALETTE CARTE PER RUOLO
-// Ogni ruolo ha un tema cromatico distinto usato nell'SVG della carta:
-//   WOLF     → rosso sangue  (bg scuro, bordo rosso)
-//   SEER     → viola mistico (bg scuro, bordo viola)
-//   VILLAGER → verde foresta (bg scuro, bordo verde)
-// La palette viene applicata tramite CSS custom properties --cb, --cc, --cg.
 // ---------------------------------------------------------------------------
 const rolePalette = {
   [ROLES.WOLF]:     { bg: '#1a0505', border: '#dc2626', glow: 'rgba(220,38,38,0.6)'  },
@@ -102,34 +101,20 @@ const rolePalette = {
   [ROLES.VILLAGER]: { bg: '#0a1205', border: '#16a34a', glow: 'rgba(22,163,74,0.6)'  },
 }
 function palette(role) {
-  // Fallback a VILLAGER se il ruolo non è riconosciuto
   return rolePalette[role] ?? rolePalette[ROLES.VILLAGER]
 }
 
 // ---------------------------------------------------------------------------
-// AZIONI FINALI (Aggiunte per la gestione del riavvio e dell'uscita)
+// AZIONI FINALI
 // ---------------------------------------------------------------------------
-
-/**
- * playAgain()
- * Invia al backend l'ordine di riportare la stanza in LOBBY (se sei l'host)
- * e naviga localmente alla schermata della lobby.
- */
 function playAgain() {
   if (lobby.isHost) {
     console.log('[ResultsView] L\'host richiede il riavvio della stanza')
-    // Mandiamo l'evento al backend per resettare phase=LOBBY e i ruoli
     emit('return_to_lobby', { room_id: lobby.lobbyCode })
   }
-  // Navigazione del frontend verso la view della lobby
   router.push('/lobby')
 }
 
-/**
- * goHome()
- * Pulisce tutti gli store locali, stacca il socket dal backend 
- * (che rimuoverà il giocatore dalla stanza fisica) e torna alla schermata inziale.
- */
 function goHome() {
   console.log('[ResultsView] Il giocatore abbandona la partita')
   game.reset()
@@ -140,7 +125,6 @@ function goHome() {
 
 // ---------------------------------------------------------------------------
 // ICONE E NOMI DEI RUOLI
-// Usati nell'SVG della carta (icona centrale) e nel footer (nome ruolo).
 // ---------------------------------------------------------------------------
 const roleIcon = {
   [ROLES.WOLF]:     '🐺',
@@ -177,7 +161,7 @@ const roleName = {
             : 'La luce ha trionfato sull\'oscurità!' }}
         </div>
 
-        <div class="announce-rounds">Partita durata {{ game.round }} round</div>
+        <div class="announce-rounds">Partita durata {{ finalRound }} round</div>
       </section>
 
       <Transition name="fade-up">
@@ -186,15 +170,15 @@ const roleName = {
 
           <div class="cards-grid">
             <div
-              v-for="(player, idx) in game.players"
+              v-for="(player, idx) in finalPlayers"
               :key="player.player_id"
               class="result-card"
               :class="{ 'result-card--dead': !player.alive }"
               :style="{
-                '--cb':    palette(player.role).bg,      /* sfondo carta */
-                '--cc':    palette(player.role).border,  /* colore bordo */
-                '--cg':    palette(player.role).glow,    /* colore glow  */
-                '--delay': `${idx * 0.15}s`,             /* stagger animazione */
+                '--cb':    palette(player.role).bg,
+                '--cc':    palette(player.role).border,
+                '--cg':    palette(player.role).glow,
+                '--delay': `${idx * 0.15}s`,
               }"
             >
               <div class="result-card__art">
@@ -252,7 +236,7 @@ const roleName = {
 
           <div class="stats-grid">
             <div class="stat-card">
-              <div class="stat-value">{{ game.round }}</div>
+              <div class="stat-value">{{ finalRound }}</div>
               <div class="stat-label">Round giocati</div>
             </div>
             <div class="stat-card">
@@ -300,11 +284,11 @@ const roleName = {
           <button v-if="lobby.isHost" class="btn-play-again" @click="playAgain">
             Gioca ancora (Riavvia Stanza)
           </button>
-          
+
           <button v-else class="btn-play-again" @click="playAgain">
             Torna in Lobby
           </button>
-          
+
           <button class="btn-home" @click="goHome">
             Torna alla Home
           </button>
@@ -370,7 +354,6 @@ const roleName = {
 /* ---- MOMENTO 1 — ANNUNCIO ---- */
 .moment-announce {
   text-align: center;
-  /* Entrata con scale + translateY per effetto "apparizione drammatica" */
   animation: heroIn 1.2s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 @keyframes heroIn {
@@ -390,7 +373,6 @@ const roleName = {
   font-size: clamp(1.8rem, 5vw, 3rem);
   font-weight: 900; letter-spacing: 0.08em; line-height: 1.1; margin-bottom: 0.7rem;
 }
-/* Colore testo diverso per i due temi */
 .theme--wolves  .announce-label { color: #fca5a5; text-shadow: 0 0 40px rgba(220,38,38,0.5); }
 .theme--village .announce-label { color: #86efac; text-shadow: 0 0 40px rgba(22,163,74,0.5);  }
 .announce-sub     { font-size: 1.2rem; font-style: italic; color: rgba(232,224,213,0.5); margin-bottom: 0.5rem; }
@@ -406,7 +388,6 @@ const roleName = {
   position: relative; border-radius: 10px;
   background: var(--cb, #0d0d14); border: 1px solid var(--cc, #1e1e2e);
   overflow: hidden;
-  /* Animazione flip 3D con stagger basato su --delay */
   animation: cardReveal 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both;
   animation-delay: var(--delay, 0s);
   transition: transform 0.25s, box-shadow 0.25s;
@@ -419,14 +400,13 @@ const roleName = {
   transform: translateY(-5px);
   box-shadow: 0 12px 28px rgba(0,0,0,0.5), 0 0 16px var(--cg);
 }
-.result-card--dead { opacity: 0.5; }  /* carte dei morti più scure */
+.result-card--dead { opacity: 0.5; }
 .result-card__art svg { display: block; width: 100%; height: auto; }
 .result-card__footer  { padding: 0.45rem 0.4rem 0.6rem; background: rgba(0,0,0,0.45); text-align: center; }
 .result-card__name    { font-size: 0.78rem; font-weight: 600; color: #e8e0d5; margin-bottom: 0.15rem; }
 .result-card__status  { font-size: 0.62rem; letter-spacing: 0.05em; }
 .result-card__status.alive { color: #4ade80; }
 .result-card__status.dead  { color: rgba(248,113,113,0.5); }
-/* Glow pulsante per i vincitori */
 .result-card__glow { position: absolute; inset: 0; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--cc); pointer-events: none; animation: glowPulse 2s ease-in-out infinite alternate; }
 @keyframes glowPulse { from { opacity: 0.3; } to { opacity: 1; } }
 
@@ -441,7 +421,6 @@ const roleName = {
 .teams-wrap  { display: grid; grid-template-columns: 1fr auto 1fr; gap: 1rem; align-items: start; }
 @media (max-width: 600px) { .teams-wrap { grid-template-columns: 1fr; } .team-divider { text-align: center; } }
 .team        { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1rem; transition: border-color 0.5s, box-shadow 0.5s; }
-/* Bordo oro per la squadra vincitrice */
 .team--winner { border-color: rgba(232,200,122,0.3); box-shadow: 0 0 20px rgba(232,200,122,0.08); }
 .team-title   { font-family: 'Cinzel', serif; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.1em; color: rgba(232,200,122,0.6); margin-bottom: 0.7rem; text-transform: uppercase; }
 .team-player  { display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; padding: 0.3rem 0; border-bottom: 1px solid rgba(255,255,255,0.04); color: rgba(232,224,213,0.7); }
@@ -458,7 +437,6 @@ const roleName = {
 .btn-home:hover  { background: rgba(255,255,255,0.08); color: #e8e0d5; transform: translateY(-1px); }
 
 /* ---- TRANSIZIONE FADE-UP ---- */
-/* Usata per Momento 2, Momento 3 e Azioni — scorrono su dall'alto */
 .fade-up-enter-active { animation: fadeUpIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both; }
 @keyframes fadeUpIn {
   from { opacity: 0; transform: translateY(30px); }
