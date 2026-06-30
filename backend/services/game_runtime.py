@@ -251,11 +251,16 @@ class GameRuntime:
             await self.advance_phase_and_emit(room_id)
 
     async def handle_game_start(self, room_id: str) -> None:
-        player_ids = self._connection_manager.get_client_ids(room_id)
+        redis = self._get_redis()
+
+        # Leggiamo i giocatori dallo stato condiviso (Redis), non dai socket locali:
+        # con più istanze i client sono divisi tra i backend.
+        players = await rs.get_all_players(redis, room_id)
+        player_ids = [pid for pid, p in players.items() if p.connected]
+
         if len(player_ids) < 5:
             raise ValueError("Need at least 5 connected players to start the game")
 
-        redis = self._get_redis()
         state = await rs.get_game_state(redis, room_id) or {}
         wolf_count = state.get("wolf_count")
         seer_count = state.get("seer_count")

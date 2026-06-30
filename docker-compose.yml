@@ -101,7 +101,8 @@ services:
       - NODE_ENV=production
       # L'URL del WS viene iniettato a build-time o runtime;
       # l'effettivo endpoint è ws://<host>/ws  (esposto da NGINX)
-      - VITE_WS_URL=ws://localhost/ws
+      - VITE_WS_URL=http://localhost
+
     networks:
       - frontend_net
     restart: unless-stopped

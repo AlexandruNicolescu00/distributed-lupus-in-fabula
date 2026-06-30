@@ -23,7 +23,7 @@ COPY . .
 # Build di produzione Vite
 # Le variabili VITE_* vengono sostituite a build-time;
 # se preferisci injection a runtime usa entrypoint.sh (vedi sotto)
-ARG VITE_WS_URL=ws://localhost/ws
+ARG VITE_WS_URL=http://localhost
 ENV VITE_WS_URL=${VITE_WS_URL}
 
 RUN npm run build

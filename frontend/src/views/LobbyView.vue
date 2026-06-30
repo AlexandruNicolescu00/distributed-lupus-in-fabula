@@ -43,13 +43,15 @@ onMounted(async () => {
   lobbyStore.listenToLobbyEvents()
   gameStore.listenToGameEvents()
 
-  // 🛡️ NOVITÀ: ASCOLTIAMO IL RIFIUTO DEL SERVER PRIMA DI CONNETTERCI
+  //   NOVITÀ: ASCOLTIAMO IL RIFIUTO DEL SERVER PRIMA DI CONNETTERCI
   on('connect_error', (err) => {
-    console.error('[LobbyView] Connessione rifiutata:', err.message)
-    // Salviamo l'errore nello store per mostrarlo nella Home
-    lobbyStore.error = err.message 
-    disconnect() // Stacchiamo la spina per sicurezza
-    router.push('/') // Ti rispediamo istantaneamente alla Home
+    console.error('[LobbyView] Connessione rifiutata:', err?.message)
+    lobbyStore.error =
+      err?.message && err.message.trim()
+        ? err.message
+        : 'Impossibile connettersi alla partita. Riprova o controlla il codice della stanza.'
+    disconnect()
+    router.push('/')
   })
 
   // In caso di "kick" dal server, controlliamo che il target siamo noi!
