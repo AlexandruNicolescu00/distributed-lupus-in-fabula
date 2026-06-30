@@ -63,10 +63,16 @@ function send() {
         v-for="msg in chat.visibleMessages"
         :key="msg.id"
         class="chatbox-msg"
-        :class="{ 'chatbox-msg--me': isMe(msg) }"
+        :class="{ 
+          'chatbox-msg--me': isMe(msg),
+          'msg--dead': msg.channel === 'dead'
+        }"
       >
         <div class="msg-meta">
-          <span class="msg-sender">{{ isMe(msg) ? 'Tu' : msg.senderName }}</span>
+          <span class="msg-sender">
+            <span v-if="msg.channel === 'dead'" class="ghost-icon">👻 </span>
+            {{ isMe(msg) ? 'Tu' : msg.senderName }}
+          </span>
           <span class="msg-time">{{ formatTime(msg.timestamp) }}</span>
         </div>
         <div class="msg-bubble">{{ msg.text }}</div>
@@ -203,6 +209,24 @@ function send() {
 .chatbox-msg--me .msg-bubble {
   background: rgba(100,180,255,0.08);
   border-color: rgba(100,180,255,0.1);
+}
+
+/* 👻 STILE FANTASMI (Aggiunto in modo supersicuro) 👻 */
+.msg--dead {
+  opacity: 0.65;
+}
+.msg--dead .msg-bubble {
+  background: rgba(148,163,184,0.08);
+  border-color: rgba(148,163,184,0.15);
+  color: rgba(148,163,184,0.9);
+  font-style: italic;
+}
+.msg--dead .msg-sender {
+  color: rgba(148,163,184,0.7);
+}
+.ghost-icon {
+  font-size: 0.7rem;
+  filter: grayscale(1);
 }
 
 .chatbox-input-wrap {

@@ -1,3 +1,9 @@
+"""
+services/game_runtime.py
+
+Manages the background tasks and timer loop for an active game room.
+"""
+
 from typing import Any, Awaitable, Callable
 
 from core import state_store as rs
@@ -33,6 +39,7 @@ class GameRuntime:
         sync_room_state: Callable[[str], Awaitable[dict]],
         schedule_phase_timer: Callable[[str, float | None], None],
         cancel_phase_timer: Callable[[str], None],
+        **kwargs # Accetta eventuali altri parametri imprevisti da main.py
     ) -> None:
         self._get_redis = get_redis
         self._connection_manager = connection_manager
@@ -176,15 +183,27 @@ class GameRuntime:
         if not target_id:
             raise ValueError("Missing target_id for cast_vote")
 
-        vote_update = await cast_vote(self._get_redis(), room_id, client_id, target_id)
+        redis = self._get_redis()
+        vote_update = await cast_vote(redis, room_id, client_id, target_id)
         await self._emit_authoritative_event(EventType.VOTE_UPDATE, room_id, vote_update)
+
+        # Controllo Timer: Tutti i vivi hanno votato?
+        players = await rs.get_all_players(redis, room_id)
+        alive_count = sum(1 for p in players.values() if p.alive)
+        votes = await rs.get_votes(redis, room_id)
+        
+        if len(votes) == alive_count:
+            # Salta il timer
+            self._cancel_phase_timer(room_id)
+            await self.advance_phase_and_emit(room_id)
 
     async def handle_wolf_vote(self, sid: str, room_id: str, client_id: str, payload: dict[str, Any]) -> None:
         target_id = payload.get("target_id")
         if not target_id:
             raise ValueError("Missing target_id for wolf_vote")
 
-        await record_wolf_vote(self._get_redis(), room_id, client_id, target_id)
+        redis = self._get_redis()
+        await record_wolf_vote(redis, room_id, client_id, target_id)
         await self._emit_authoritative_event(
             EventType.WOLF_VOTE,
             room_id,
@@ -192,13 +211,16 @@ class GameRuntime:
             to=sid,
             publish=False,
         )
+        
+        await self._check_night_actions_complete(room_id)
 
     async def handle_seer_action(self, sid: str, room_id: str, client_id: str, payload: dict[str, Any]) -> None:
         target_id = payload.get("target_id")
         if not target_id:
             raise ValueError("Missing target_id for seer_action")
 
-        await record_seer_action(self._get_redis(), room_id, client_id, target_id)
+        redis = self._get_redis()
+        await record_seer_action(redis, room_id, client_id, target_id)
         await self._emit_authoritative_event(
             EventType.SEER_ACTION,
             room_id,
@@ -206,6 +228,27 @@ class GameRuntime:
             to=sid,
             publish=False,
         )
+        
+        await self._check_night_actions_complete(room_id)
+
+    async def _check_night_actions_complete(self, room_id: str) -> None:
+        """Helper to check if all wolves and seer have acted. If so, skips timer."""
+        redis = self._get_redis()
+        players = await rs.get_all_players(redis, room_id)
+        
+        # Check wolves
+        alive_wolves = [p for p in players.values() if p.alive and p.role and p.role.value == 'WOLF']
+        wolf_votes = await rs.get_wolf_votes(redis, room_id)
+        wolves_done = len(wolf_votes) == len(alive_wolves)
+        
+        # Check seer
+        alive_seer = next((p for p in players.values() if p.alive and p.role and p.role.value == 'SEER'), None)
+        seer_action = await rs.get_seer_action(redis, room_id)
+        seer_done = (alive_seer is None) or (seer_action is not None)
+        
+        if wolves_done and seer_done:
+            self._cancel_phase_timer(room_id)
+            await self.advance_phase_and_emit(room_id)
 
     async def handle_game_start(self, room_id: str) -> None:
         player_ids = self._connection_manager.get_client_ids(room_id)

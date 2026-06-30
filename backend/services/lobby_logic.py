@@ -1,3 +1,4 @@
+import logging
 import redis.asyncio as aioredis
 
 from core import state_store as rs
@@ -12,6 +13,8 @@ from models.events import (
 )
 from models.game import GameState, Phase, Player
 from services.game_logic import _default_role_counts, _validate_role_counts
+
+logger = logging.getLogger(__name__)
 
 
 def player_payload(player: Player, *, reveal_role: bool = True) -> dict[str, object]:
@@ -44,21 +47,34 @@ async def ensure_domain_player(
     return player
 
 
+# Distruzione fisica in ENTRAMBI i registri (Gioco e Lobby) per le uscite complete,
+# mark disconnesso per le uscite in game.
 async def mark_player_disconnected(
     redis: aioredis.Redis,
     room_id: str,
     client_id: str,
 ) -> None:
-    player = await rs.get_player(redis, room_id, client_id)
-    if player is None:
-        return
-    player.connected = False
-    await rs.set_player(redis, room_id, player)
     state = await rs.get_game_state(redis, room_id) or {}
+    phase = state.get("phase", Phase.LOBBY.value)
+
+    # Rimuoviamo sempre il giocatore dall'elenco dei pronti
     ready_player_ids = set(state.get("ready_player_ids", []))
     if client_id in ready_player_ids:
         ready_player_ids.discard(client_id)
         await rs.patch_game_state(redis, room_id, ready_player_ids=sorted(ready_player_ids))
+
+    if phase == Phase.LOBBY.value:
+        # Partita non iniziata, eliminiamo da tutti i registri!
+        await rs.delete_player(redis, room_id, client_id) # Cancella dal DOMINIO (Gioco)
+        await redis.hdel(rs.key_room_players(room_id), client_id) # Cancella dalla LOBBY
+        logger.info("Player %s permanently deleted from all lobby records in %s", client_id, room_id)
+    else:
+        # PARTITA IN CORSO: Il giocatore viene solo messo in "pausa" per poter rientrare
+        player = await rs.get_player(redis, room_id, client_id)
+        if player is not None:
+            player.connected = False
+            await rs.set_player(redis, room_id, player)
+            logger.info("Player %s marked disconnected in game %s", client_id, room_id)
 
 
 async def promote_host_if_needed(
@@ -67,32 +83,32 @@ async def promote_host_if_needed(
     players_snapshot: list[dict],
 ) -> str | None:
     state = await rs.get_game_state(redis, room_id) or {}
-    current_host_id = state.get("host_id")
 
     if not players_snapshot:
         await rs.patch_game_state(redis, room_id, host_id=None, ready_player_ids=[])
         return None
 
-    remaining_ids = [player.get("player_id") for player in players_snapshot if player.get("player_id")]
-    if current_host_id in remaining_ids:
-        return current_host_id
+    # Cerca nel payload chi ha ottenuto il ruolo di host dallo state_store
+    new_host = next((p for p in players_snapshot if p.get("is_host")), None)
 
-    promoted_host_id = players_snapshot[0].get("player_id")
-    if not promoted_host_id:
-        return None
+    if new_host and state.get("host_id") != new_host["player_id"]:
+        promoted_host_id = new_host["player_id"]
 
-    ready_player_ids = set(state.get("ready_player_ids", []))
-    if current_host_id:
-        ready_player_ids.discard(current_host_id)
-    ready_player_ids.add(promoted_host_id)
+        # Gestione del Ready
+        ready_player_ids = set(state.get("ready_player_ids", []))
+        if state.get("host_id"):
+            ready_player_ids.discard(state.get("host_id"))
+        ready_player_ids.add(promoted_host_id)
 
-    await rs.patch_game_state(
-        redis,
-        room_id,
-        host_id=promoted_host_id,
-        ready_player_ids=sorted(ready_player_ids),
-    )
-    return promoted_host_id
+        await rs.patch_game_state(
+            redis,
+            room_id,
+            host_id=promoted_host_id,
+            ready_player_ids=sorted(ready_player_ids),
+        )
+        return promoted_host_id
+
+    return state.get("host_id")
 
 
 async def get_player(
@@ -110,6 +126,7 @@ async def build_room_snapshot(redis: aioredis.Redis, room_id: str) -> dict:
     ready_player_ids = state.get("ready_player_ids", [])
     phase = state.get("phase", Phase.LOBBY.value)
     reveal_roles = phase == Phase.ENDED.value
+    
     return {
         "phase": phase,
         "round": state.get("round", 0),

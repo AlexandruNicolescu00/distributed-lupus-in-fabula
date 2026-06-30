@@ -211,6 +211,34 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
         client_id = client_id or params.get("client_id") or str(uuid.uuid4())
         room_id   = room_id   or params.get("room_id",   "lobby")
 
+    # ──  CONTROLLI DI SICUREZZA ───────────────────────────────────────────
+    
+    current_state = await state_store.get_state(room_id)
+    if current_state:
+        phase = current_state.get("phase")
+        
+        # Controlliamo se il giocatore era già in questa partita (utile se ricarica la pagina dei risultati)
+        existing_players = await state_store.get_players(room_id)
+        is_known_player = any(p.get("player_id") == client_id for p in existing_players)
+
+        # Se la fase non è la LOBBY iniziale
+        if phase and phase != Phase.LOBBY.value:
+            # Blocchiamo chiunque sia un giocatore "nuovo"
+            if not is_known_player:
+                if phase == Phase.ENDED.value:
+                    logger.warning("Accesso negato: partita terminata, in attesa di riavvio | client=%s room=%s", client_id, room_id)
+                    raise socketio.exceptions.ConnectionRefusedError("La partita è terminata. Attendi che l'host riavvii la lobby prima di entrare.")
+                else:
+                    logger.warning("Accesso negato: partita in corso | client=%s room=%s", client_id, room_id)
+                    raise socketio.exceptions.ConnectionRefusedError("La partita è già in corso.")
+
+    # 2. Controllo Nickname Duplicato (Anti-clone / Anti-doppia scheda)
+    if connection_manager.client_connections_in_room(room_id, client_id) > 0:
+        logger.warning("Accesso negato: nome in uso | client=%s room=%s", client_id, room_id)
+        raise socketio.exceptions.ConnectionRefusedError(f"Il nome '{client_id}' è già in partita.")
+        
+    # ────────────────────────────────────────────────────────────────────────
+
     logger.info("connect | sid=%s client=%s room=%s instance=%s",
                 sid[:8], client_id, room_id, INSTANCE_ID)
 
@@ -219,18 +247,24 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     await pubsub_manager.subscribe_room(room_id)
 
     await ensure_domain_player(_domain_redis(), room_id, client_id)
-    await sync_lobby_room_state(_domain_redis(), state_store, room_id)
+    await state_store.add_player(room_id, client_id) # Aggiorna la cache preliminare
+    
+    # Generiamo lo snapshot definitivo della stanza 
+    # e lo usiamo COME FONTE ASSOLUTA per i "pronto" e per l'ordinamento.
+    current_state = await sync_lobby_room_state(_domain_redis(), state_store, room_id)
 
-    # Recupera stato persistente e lista player completa (list[dict])
-    players       = await state_store.add_player(room_id, client_id)
-    current_state = await state_store.get_state(room_id)
-
+    unified_players = sorted(
+        current_state.get("players", []),
+        key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+    )
+    current_state["players"] = unified_players
+    
     # Invia state sync al solo client che si (ri)connette
     sync_event = RedisEvent(
         event_type=EventType.GAME_STATE_SYNC,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"state": current_state or {}, "players": players},
+        payload={"state": current_state or {}, "players": unified_players},
     )
     ws_msg = WSMessage.from_redis_event(sync_event)
     await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), to=sid)
@@ -239,18 +273,18 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     if game_runtime:
         await game_runtime.emit_role_assignment_for_player(room_id, client_id, sid)
 
-    # Notifica tutti gli altri client (locale + altre istanze via Redis)
+    # Notifica tutti gli altri client (locale + altre istanze via Redis) usando la LISTA UNIFICATA E ORDINATA
     join_event = RedisEvent(
         event_type=EventType.PLAYER_JOINED,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"client_id": client_id, "player": asdict(player) if player else {}, "players": players},
+        payload={"client_id": client_id, "player": asdict(player) if player else {}, "players": unified_players},
     )
     ws_msg = WSMessage.from_redis_event(join_event)
     
     await sio.emit(EventType.PLAYER_JOINED, ws_msg.model_dump(), room=room_id, skip_sid=sid)
     await pubsub_manager.publish(join_event)
-
+    
 
 @sio.event
 async def disconnect(sid: str):
@@ -273,18 +307,58 @@ async def disconnect(sid: str):
         )
         return
 
-    await mark_player_disconnected(_domain_redis(), room_id, client_id or sid)
+    # ──  LOGICA DI ABBANDONO A PARTITA IN CORSO ──
+    current_state = await state_store.get_state(room_id)
+    phase = current_state.get("phase") if current_state else Phase.LOBBY.value
+    is_midgame = phase not in (Phase.LOBBY.value, Phase.ENDED.value)
 
-    remaining = await state_store.remove_player(room_id, client_id or sid)
-    await promote_host_if_needed(_domain_redis(), room_id, remaining)
-    await sync_lobby_room_state(_domain_redis(), state_store, room_id)
     leaving_player = await get_player(_domain_redis(), room_id, client_id or sid)
+    player_name = leaving_player.username if leaving_player else (client_id or sid)
+
+    if is_midgame and leaving_player and leaving_player.alive:
+        # 1. Uccidiamo il giocatore che fugge (evita stalli e permette check vittoria)
+        leaving_player.alive = False
+        from core import state_store as rs
+        await rs.set_player(_domain_redis(), room_id, leaving_player)
+        
+        # 2. Notifichiamo tutti in chat
+        sys_msg_event = RedisEvent(
+            event_type=EventType.CHAT_MESSAGE,
+            room_id=room_id,
+            sender_id=INSTANCE_ID,
+            payload={
+                "senderId": "system",
+                "senderName": "Sistema",
+                "text": f"💨 {player_name} è fuggito dal villaggio nel bel mezzo della partita!",
+                "channel": "global",
+            },
+        )
+        await sio.emit(EventType.CHAT_MESSAGE, WSMessage.from_redis_event(sys_msg_event).model_dump(), room=room_id)
+        await pubsub_manager.publish(sys_msg_event)
+
+
+    # ── STANDARD DISCONNECT LOGIC (CON ELEZIONE HOST) ──
+    await mark_player_disconnected(_domain_redis(), room_id, client_id or sid)
+    
+    if phase == Phase.LOBBY.value:
+        remaining_raw = await state_store.remove_player(room_id, client_id or sid)
+    else:
+        remaining_raw = await state_store.set_player_disconnected(room_id, client_id or sid)
+        
+    await promote_host_if_needed(_domain_redis(), room_id, remaining_raw)
+    
+    # Generiamo snapshot e ordiniamo per il LEAVE
+    current_state = await sync_lobby_room_state(_domain_redis(), state_store, room_id)
+    unified_players = sorted(
+        current_state.get("players", []),
+        key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+    )
 
     leave_event = RedisEvent(
         event_type=EventType.PLAYER_LEFT,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"client_id": client_id, "player": asdict(leaving_player) if leaving_player else {}, "players": remaining},
+        payload={"client_id": client_id, "player": asdict(leaving_player) if leaving_player else {}, "players": unified_players},
     )
     ws_msg = WSMessage.from_redis_event(leave_event)
 
@@ -298,6 +372,41 @@ async def disconnect(sid: str):
     if connection_manager.client_count(room_id) == 0:
         await pubsub_manager.unsubscribe_room(room_id)
         logger.info("Stanza vuota, unsubscribed da Redis | room=%s", room_id)
+        
+    # ── CONTROLLO VITTORIA ISTANTANEO (Se l'abbandono cambia le sorti) ──
+    if is_midgame:
+        from services.game_logic import check_winner, _end_game
+        from models.events import PhaseChangedPayload
+        r = _domain_redis()
+        winner = await check_winner(r, room_id)
+        if winner:
+            logger.info("Vittoria istantanea causata da disconnessione | room=%s winner=%s", room_id, winner.value)
+            result = {}
+            await _end_game(r, room_id, winner, current_state.get("round", 0), result)
+            
+            # Spara il cambio fase a ENDED
+            payload = PhaseChangedPayload(
+                phase=Phase.ENDED.value,
+                round=current_state.get("round", 0),
+                timer_end=None
+            )
+            await _emit_authoritative_event(EventType.PHASE_CHANGED, room_id, payload)
+            
+            # Forza il sync dello stato ai client (per fargli vedere i ruoli/morti aggiornati)
+            sync_state = await state_store.get_state(room_id)
+            # Dobbiamo inviare i dati freschi ordinati
+            sync_players = sorted(
+                (await state_store.get_players(room_id)),
+                key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+            )
+            sync_event = RedisEvent(
+                event_type=EventType.GAME_STATE_SYNC,
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload={"state": sync_state or {}, "players": sync_players},
+            )
+            await sio.emit(EventType.GAME_STATE_SYNC, WSMessage.from_redis_event(sync_event).model_dump(), room=room_id)
+            _cancel_phase_timer(room_id)
 
 
 @sio.on("chat:message")
@@ -449,6 +558,120 @@ async def catch_all(event: str, sid: str, data: dict):
 
     payload = data if isinstance(data, dict) else {"raw": data}
     try:
+        # ===================================================================
+        # BLOCCO ANTI-CHIUSURA FORZATA
+        # ===================================================================
+        if event in ("room_closed", "close_room"):
+            logger.warning("Tentativo bloccato di chiudere forzatamente la stanza | room=%s client=%s", room_id, client_id)
+            return
+
+        # ===================================================================
+        # KICK DI UN GIOCATORE (SOLO HOST)
+        # ===================================================================
+        if event == "kick_player":
+            target_id = payload.get("target_id")
+            if not target_id:
+                return
+            
+            # Recuperiamo i dati della lobby come dizionario per leggere "is_host"
+            current_players = await state_store.get_players(room_id)
+            host_data = next((p for p in current_players if p.get("player_id") == client_id), None)
+            
+            # 1. Verifica che chi richiede il kick sia davvero l'host
+            if not host_data or not (host_data.get("is_host") or host_data.get("isHost")):
+                logger.warning("Tentativo di kick da non-host bloccato | client=%s room=%s", client_id, room_id)
+                return
+                
+            logger.info("Host %s sta espellendo %s dalla stanza %s", client_id, target_id, room_id)
+            
+            r = _domain_redis()
+            from core import state_store as rs
+            
+            # 2. DISINTEGRAZIONE TOTALE DAI DUE DATABASE
+            await rs.delete_player(r, room_id, target_id) #Rimuove fisicamente dal DB profondo
+            remaining_raw = await state_store.remove_player(room_id, target_id) #Rimuove dalla memoria in tempo reale della stanza
+            
+            #Generiamo snapshot e ordiniamo per il KICK
+            current_state = await sync_lobby_room_state(r, state_store, room_id)
+            unified_players = sorted(
+                current_state.get("players", []),
+                key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+            )
+            
+            # 3. Aggiorna la lobby di tutti (così sparisce la sua carta immediatamente e ordinata)
+            leave_event = RedisEvent(
+                event_type=EventType.PLAYER_LEFT,
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload={"client_id": target_id, "player": {"player_id": target_id}, "players": unified_players},
+            )
+            await sio.emit(EventType.PLAYER_LEFT, WSMessage.from_redis_event(leave_event).model_dump(), room=room_id)
+            await pubsub_manager.publish(leave_event)
+            
+            # 4. Spedisci l'evento "kicked" in broadcast a tutta la stanza.
+            kick_payload = {"target_id": target_id, "reason": "Sei stato espulso dall'host."}
+            
+            await sio.emit("kicked", kick_payload, room=room_id)
+            kick_redis_event = RedisEvent(
+                event_type="kicked",
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload=kick_payload
+            )
+            await pubsub_manager.publish(kick_redis_event)
+            return
+
+        # ===================================================================
+        # GESTIONE RIAVVIO PARTITA (Da ENDED a LOBBY)
+        # ===================================================================
+        if event in ("return_to_lobby", "play_again"):
+            logger.info("L'host ha richiesto il riavvio della partita | room=%s", room_id)
+            from core import state_store as rs  # Importiamo l'accesso diretto a Redis
+            r = _domain_redis()
+            
+            # 1. Resetta lo stato della stanza a LOBBY e pulisci le variabili di fine round
+            await rs.patch_game_state(
+                r, room_id, 
+                phase=Phase.LOBBY.value, 
+                winner=None, 
+                round=0, 
+                timer_end=None,
+                ready_player_ids=[] #  FORZA TUTTI A NON ESSERE PRONTI!
+            )
+            
+            # 1.5. Ripulisci i fantasmi disconnessi DA ENTRAMBI I DATABASE!
+            await rs.clean_disconnected_players(r, room_id) # Elimina dal DB profondo (Game Logic)
+            await state_store.clean_disconnected_players(room_id) # Elimina dalla cache Socket.IO
+            
+            # 2. Resuscita i giocatori e pulisci i loro ruoli/voti/stato pronti
+            all_players = await rs.get_all_players(r, room_id)
+            for p in all_players.values():
+                p.alive = True
+                p.role = None
+                p.has_voted = False
+                p.has_acted = False
+                p.ready = False # Vogliamo che tutti debbano rimettere "pronto" manualmente
+                await rs.set_player(r, room_id, p)
+                
+            # 3. Sincronizza la memoria locale e ordina
+            current_state = await sync_lobby_room_state(r, state_store, room_id)
+            unified_players = sorted(
+                current_state.get("players", []),
+                key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
+            )
+            
+            # 4. Manda lo State Sync a TUTTI per aggiornare le UI all'istante (con i fantasmi spariti)
+            sync_event = RedisEvent(
+                event_type=EventType.GAME_STATE_SYNC,
+                room_id=room_id,
+                sender_id=INSTANCE_ID,
+                payload={"state": current_state or {}, "players": unified_players},
+            )
+            ws_msg = WSMessage.from_redis_event(sync_event)
+            await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), room=room_id)
+            return
+        # ===================================================================
+
         if event == EventType.CAST_VOTE:
             await game_runtime.handle_cast_vote(room_id, client_id, payload)
             return

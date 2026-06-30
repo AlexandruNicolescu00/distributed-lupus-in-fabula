@@ -6,7 +6,7 @@ export const useLobbyStore = defineStore('lobby', () => {
   const lobbyCode = ref(null)
   const players = ref([])
   const currentPlayerId = ref(null)
-  const roleSetup = ref({ wolves: 1, seers: 1 })
+  const roleSetup = ref({ wolves: 1, seers: 0 }) // <- Partiamo con 0 veggenti di default!
   const hostPlayerId = ref(null)
   const readyPlayerIds = ref([])
   const isLoading = ref(false)
@@ -38,14 +38,33 @@ export const useLobbyStore = defineStore('lobby', () => {
   })
 
   const roleSummary = computed(() => normalizeRoleSetup(players.value.length))
-  const maxSeers = computed(() => (players.value.length >= 5 ? 1 : 0))
+  const maxSeers = computed(() => 1) // L'host può mettere al massimo 1 veggente se vuole
   const maxWolves = computed(() => {
     const totalPlayers = players.value.length
     const seers = Math.min(roleSetup.value.seers, maxSeers.value)
     return Math.max(1, Math.floor((Math.max(totalPlayers - seers, 0) - 1) / 2))
   })
 
-  // FIX: Ora la funzione è "a prova di bomba" e legge i JSON stringificati!
+  // ---- UTILS & VALIDATION ----
+
+  function validateNickname(name) {
+    if (!name || typeof name !== 'string') {
+      throw new Error("Il nome non può essere vuoto.")
+    }
+    const trimmed = name.trim()
+    if (trimmed.length < 3) {
+      throw new Error("Il nome deve avere almeno 3 caratteri.")
+    }
+    if (trimmed.length > 15) {
+      throw new Error("Il nome non può superare i 15 caratteri.")
+    }
+    // Permette solo lettere (A-Z, a-z), numeri (0-9), trattini (-) e underscore (_)
+    if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) {
+      throw new Error("Il nome può contenere solo lettere, numeri, trattini e underscore (senza spazi).")
+    }
+    return trimmed
+  }
+
   function extractPayload(message) {
     let msg = message
     if (typeof msg === 'string') {
@@ -78,25 +97,21 @@ export const useLobbyStore = defineStore('lobby', () => {
     }
   }
 
+  // 🔥 FIX BLINDATO: Il frontend smette di auto-bilanciare. Usa quello che decide l'host.
   function normalizeRoleSetup(totalPlayers = players.value.length, source = roleSetup.value) {
     const safeTotal = Math.max(0, totalPlayers)
-    let seers = Math.min(Math.max(source?.seers ?? 0, 0), safeTotal >= 5 ? 1 : 0)
+    
+    // Mantiene il numero di seers scelto, massimo 1 (se si è in pochi si può non metterne)
+    let seers = Math.min(Math.max(source?.seers ?? 0, 0), 1)
+    
+    // Mantiene il numero di lupi scelto
     let wolves = Math.max(1, source?.wolves ?? 1)
 
-    const wolvesCap = Math.max(1, Math.floor((Math.max(safeTotal - seers, 0) - 1) / 2))
+    // Blocca i lupi se sono troppi rispetto ai contadini
+    const wolvesCap = Math.max(1, Math.floor((safeTotal - 2) / 2))
     wolves = Math.min(wolves, wolvesCap)
 
     let villagers = Math.max(0, safeTotal - wolves - seers)
-
-    while (villagers <= wolves && wolves > 1) {
-      wolves -= 1
-      villagers = Math.max(0, safeTotal - wolves - seers)
-    }
-
-    while (villagers <= wolves && seers > 0) {
-      seers -= 1
-      villagers = Math.max(0, safeTotal - wolves - seers)
-    }
 
     return { wolves, seers, villagers }
   }
@@ -123,7 +138,7 @@ export const useLobbyStore = defineStore('lobby', () => {
       (player) => typeof player === 'object' && (player.is_host === true || player.isHost === true)
     )
 
-    return remotePlayers.map((player, index) => {
+    let parsed = remotePlayers.map((player, index) => {
       const resolvedId = typeof player === 'object'
         ? playerIdOf(player) ?? `player-${index}`
         : player ?? `player-${index}`
@@ -134,8 +149,10 @@ export const useLobbyStore = defineStore('lobby', () => {
           ? resolvedId === hostId
           : index === 0
 
+      // Se sei l'host, sei sempre pronto. Altrimenti controllo il set locale O il payload
       const readyFromState = readySet.has(resolvedId)
       const readyFromPayload = typeof player === 'object' ? player.ready === true : false
+      const isReady = isPlayerHost ? true : (readyFromState || readyFromPayload)
 
       return {
         id: resolvedId,
@@ -144,12 +161,21 @@ export const useLobbyStore = defineStore('lobby', () => {
         username: player?.username || player?.name || resolvedId,
         isHost: isPlayerHost,
         is_host: isPlayerHost,
-        ready: isPlayerHost ? (readyFromState || readyFromPayload || true) : (readyFromState || readyFromPayload),
+        ready: isReady,
         connected: typeof player === 'object' ? player.connected !== false : true,
         alive: typeof player === 'object' ? player.alive ?? true : true,
         role: typeof player === 'object' ? player.role ?? null : null,
       }
     })
+
+    // L'host sempre in cima, gli altri in ordine alfabetico. NON FUNZIONA
+    parsed.sort((a, b) => {
+        if (a.is_host) return -1;
+        if (b.is_host) return 1;
+        return a.username.localeCompare(b.username);
+    });
+
+    return parsed;
   }
 
   function syncRoleSetup() {
@@ -227,13 +253,21 @@ export const useLobbyStore = defineStore('lobby', () => {
     on('game_state_sync', (message) => {
       const payload = extractPayload(message)
       console.log('[Lobby] game_state_sync:', payload)
-      if (payload.players) {
-        players.value = [...payload.players]
-      }
       
       const state = payload.state || {}
       if (state.host_id) hostPlayerId.value = state.host_id
-      if (state.role_setup) {
+      if (state.ready_player_ids) readyPlayerIds.value = [...state.ready_player_ids]
+      
+      // APPLICA PARSEPLAYERS
+      if (payload.players) {
+        players.value = parsePlayers(payload.players, state)
+      }
+      
+      // Mantiene i ruoli ricevuti. Se non li riceve mantiene i correnti.
+      if (state.wolf_count !== undefined || state.seer_count !== undefined) {
+        roleSetup.value.wolves = state.wolf_count ?? roleSetup.value.wolves
+        roleSetup.value.seers = state.seer_count ?? roleSetup.value.seers
+      } else if (state.role_setup) {
         roleSetup.value.wolves = state.role_setup.wolves ?? roleSetup.value.wolves
         roleSetup.value.seers = state.role_setup.seers ?? roleSetup.value.seers
       }
@@ -243,22 +277,30 @@ export const useLobbyStore = defineStore('lobby', () => {
       const payload = extractPayload(message)
       console.log('[Lobby] player_joined:', payload)
       if (payload.players) {
-        players.value = [...payload.players]
+        players.value = parsePlayers(payload.players, { ready_player_ids: readyPlayerIds.value })
       }
+      // Assicuriamoci che i ruoli vengano ri-sincronizzati per non sforare i massimi
+      syncRoleSetup()
     })
 
     on('player_left', (message) => {
       const payload = extractPayload(message)
       console.log('[Lobby] player_left:', payload)
       if (payload.players) {
-        players.value = [...payload.players]
+        players.value = parsePlayers(payload.players, { ready_player_ids: readyPlayerIds.value })
       }
+      // Assicuriamoci che i ruoli vengano ri-sincronizzati per non sforare i massimi
+      syncRoleSetup()
     })
 
     const handleReady = (message) => {
       const payload = extractPayload(message)
+      if (payload.ready_player_ids) {
+          readyPlayerIds.value = [...payload.ready_player_ids]
+      }
+      
       if (payload.players) {
-        players.value = [...payload.players]
+        players.value = parsePlayers(payload.players, { ready_player_ids: readyPlayerIds.value })
       }
     }
     on('player_ready', handleReady)
@@ -282,22 +324,25 @@ export const useLobbyStore = defineStore('lobby', () => {
     })
   }
 
+  // ---- ACTIONS ----
+
   async function createLobby(playerName) {
     isLoading.value = true
     error.value = null
     try {
+      const safeName = validateNickname(playerName) // Validazione
       const code = 'WOLF-' + Math.floor(1000 + Math.random() * 9000)
 
-      sessionStorage.setItem('client_id', playerName)
+      sessionStorage.setItem('client_id', safeName)
       sessionStorage.setItem('room_id', code)
 
       lobbyCode.value = code
-      currentPlayerId.value = playerName
+      currentPlayerId.value = safeName
       players.value = [{
-        id: playerName,
-        player_id: playerName,
-        name: playerName,
-        username: playerName,
+        id: safeName,
+        player_id: safeName,
+        name: safeName,
+        username: safeName,
         isHost: true,
         is_host: true,
         ready: true,
@@ -308,6 +353,7 @@ export const useLobbyStore = defineStore('lobby', () => {
       syncRoleSetup()
     } catch (err) {
       error.value = err.message
+      throw err 
     } finally {
       isLoading.value = false
     }
@@ -317,8 +363,11 @@ export const useLobbyStore = defineStore('lobby', () => {
     isLoading.value = true
     error.value = null
     try {
+      if (!code || typeof code !== 'string' || code.trim() === '') {
+        throw new Error("Inserisci un codice stanza valido.")
+      }
       const safeCode = code.trim().toUpperCase()
-      const safeName = playerName.trim()
+      const safeName = validateNickname(playerName) // Validazione
       
       sessionStorage.setItem('client_id', safeName)
       sessionStorage.setItem('room_id', safeCode)
@@ -328,6 +377,7 @@ export const useLobbyStore = defineStore('lobby', () => {
     } catch (err) {
       error.value = err.message
       console.error('[LobbyStore] Errore durante joinLobby:', err)
+      throw err 
     } finally {
       isLoading.value = false
     }
@@ -341,15 +391,12 @@ export const useLobbyStore = defineStore('lobby', () => {
   function startGame() {
     if (!isHost.value) return
 
-    // 1. Assicuriamoci che il backend abbia i ruoli salvati prima di partire
     const finalSetup = syncRoleSetup()
     emit('lobby:update_settings', {
       wolf_count: finalSetup.wolves,
       seer_count: finalSetup.seers,
     })
 
-    // 2. Diamo una frazione di secondo (100ms) al database Redis per 
-    // memorizzare i lupi, e poi diamo il segnale di inizio partita!
     setTimeout(() => {
       emit('lobby:start_game', {
         lobby_code: lobbyCode.value,
@@ -357,16 +404,17 @@ export const useLobbyStore = defineStore('lobby', () => {
     }, 100)
   }
 
+  // L'host espelle un giocatore
   function kickPlayer(targetId) {
     if (!isHost.value) return
-    emit('kick_player', { lobby_code: lobbyCode.value, target_id: targetId })
+    emit('kick_player', { target_id: targetId })
   }
 
   function reset() {
     lobbyCode.value = null
     players.value = []
     currentPlayerId.value = null
-    roleSetup.value = { wolves: 1, seers: 1 }
+    roleSetup.value = { wolves: 1, seers: 0 } // Reset a 0 veggenti
     hostPlayerId.value = null
     readyPlayerIds.value = []
     listenersBound.value = false

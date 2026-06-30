@@ -11,6 +11,7 @@
  * canKick  — true se l'host può rimuovere questo giocatore
  */
 import PlayerAvatar from '@/components/PlayerAvatar.vue'
+import { roleIconSrc } from '@/assets/roleIcons'
 
 const props = defineProps({
   player:   { type: Object,  required: true },
@@ -75,10 +76,7 @@ function isAlive() {
           fill="none" :stroke="palette().border" stroke-width="0.8" opacity="0.4"/>
 
         <template v-if="showRole && player.role">
-          <text x="60" y="85" text-anchor="middle"
-            font-size="40" :fill="palette().border" opacity="0.8">
-            {{ roleIcon() }}
-          </text>
+          <image :href="roleIconSrc[player.role]" x="24" y="28" width="72" height="72" preserveAspectRatio="xMidYMid meet" />
           <text x="60" y="145" text-anchor="middle"
             font-size="7" font-family="Georgia,serif" letter-spacing="1.5"
             :fill="palette().border" opacity="0.5">
