@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # tests/load_test.py
+# python tests/load_test.py --url http://game.local --clients 200
 
 import argparse
 import asyncio
@@ -103,9 +104,13 @@ async def client_worker(client_id: str, room_id: str, cfg: LoadTestConfig, stop_
         while not stop_event.is_set():
             msg_id = uuid.uuid4().hex
             my_pending[msg_id] = time.monotonic()
+            # Emette direttamente l'evento "player_action": il backend (catch_all
+            # → _broadcast_passthrough) lo ri-emette con lo stesso nome, così
+            # l'handler on_action riceve l'eco e misura l'RTT. msg_id va al primo
+            # livello del payload perché finisce nell'envelope WSMessage.payload.
             await client.send(
-                "client_message",
-                {"event_type": "player_action", "payload": {"msg_id": msg_id, "text": "ping"}},
+                "player_action",
+                {"msg_id": msg_id, "text": "ping"},
             )
             async with metrics_lock:
                 metrics.messages_sent += 1

@@ -18,9 +18,7 @@
 #   python tests/test_reconnection.py --url http://game.local
 #
 #   # Modalità diretta con port-forward (tutti i test incluso il 3)
-#   python tests/test_reconnection.py \
-#     --pod-a http://localhost:8001 \
-#     --pod-b http://localhost:8002
+#   python tests/test_reconnection.py --pod-a http://localhost:8001 --pod-b http://localhost:8002
 # ─────────────────────────────────────────────────────────────────────────────
 
 import argparse

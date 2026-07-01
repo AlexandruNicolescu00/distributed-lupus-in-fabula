@@ -37,20 +37,29 @@ metadata:
 
     # ── Load balancing ────────────────────────────────────────────────────────
     # Valori validi: round_robin | ewma | ip_hash
-    # ewma (Exponentially Weighted Moving Average) bilancia in base alla latenza
-    # misurata — ottimale per WebSocket long-lived, simile a least_conn.
-    nginx.ingress.kubernetes.io/load-balance: "ewma"
+    # Per i WebSocket usiamo round_robin: ogni nuova connessione va all'endpoint
+    # successivo, distribuendo le connessioni long-lived in modo uniforme.
+    # NB: ewma NON è adatto qui — bilancia sulla latenza di RISPOSTA, che per una
+    # connessione persistente arriva solo alla chiusura: durante il test non ha
+    # segnale e concentra tutte le connessioni sullo stesso pod.
+    nginx.ingress.kubernetes.io/load-balance: "round_robin"
 
     # ── Corpo richiesta ───────────────────────────────────────────────────────
     nginx.ingress.kubernetes.io/proxy-body-size: "1m"
 
     # ── Rate limiting ─────────────────────────────────────────────────────────
-    # Valori generosi per supportare test di carico e picchi di connessioni.
-    # In produzione abbassare in base al traffico atteso.
+    # Limiti PER IP SORGENTE, validi per tutto l'Ingress. Vanno tenuti sopra il
+    # carico atteso da un singolo IP: un load test che apre N connessioni
+    # WebSocket long-lived dalla stessa macchina occupa N slot di limit-connections
+    # contemporaneamente; se il limite è ~N, la connessione N+1 (inclusa
+    # l'apertura di Grafana dallo stesso IP) viene rifiutata con 503.
+    # NB: il monitoraggio (/grafana, /prometheus) è su un Ingress separato senza
+    # questi limiti (vedi game-ingress-monitoring più sotto), così non viene mai
+    # strozzato dal traffico di gioco.
     # limit-connections: max connessioni simultanee per IP
     # limit-rps: max nuove connessioni al secondo per IP
-    nginx.ingress.kubernetes.io/limit-connections: "200"
-    nginx.ingress.kubernetes.io/limit-rps:         "100"
+    nginx.ingress.kubernetes.io/limit-connections: "1000"
+    nginx.ingress.kubernetes.io/limit-rps:         "300"
 
 spec:
   ingressClassName: nginx
@@ -86,6 +95,37 @@ spec:
                 port:
                   number: 8000
 
+          # ── Frontend (catch-all) ──────────────────────────────────────────
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 3000
+
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Ingress dedicato al MONITORAGGIO (Grafana / Prometheus).
+# Separato da game-ingress di proposito: NON ha i rate-limit per-IP del gameplay,
+# così durante un load test (che satura limit-connections sull'IP sorgente) la
+# dashboard resta raggiungibile e non risponde più 503.
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: game-ingress-monitoring
+  namespace: game
+  labels:
+    app.kubernetes.io/part-of: game-platform
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: game.local
+      http:
+        paths:
           # ── Grafana ──────────────────────────────────────────────────────
           - path: /grafana
             pathType: Prefix
@@ -103,15 +143,6 @@ spec:
                 name: prometheus
                 port:
                   number: 9090
-
-          # ── Frontend (catch-all) ──────────────────────────────────────────
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: frontend
-                port:
-                  number: 3000
 
 ---
 # ConfigMap per custom headers inoltrati al backend

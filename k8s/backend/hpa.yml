@@ -57,3 +57,30 @@ spec:
         - type: Pods
           value: 1
           periodSeconds: 60
+
+# ─────────────────────────────────────────────────────────────────────────────
+# P14 — Scaling su METRICA DI CONNESSIONI (consigliato per workload WebSocket)
+# ─────────────────────────────────────────────────────────────────────────────
+# Il backend è I/O/connessioni-bound, non CPU-bound: molte WS idle = CPU bassa ma
+# carico (memoria/file descriptor/fan-out) alto. La CPU è quindi un segnale di
+# scaling poco allineato (rif. teoria: scalabilità; osservabilità — scegliere la
+# metrica giusta). La metrica già esposta `ws_active_connections` è più indicativa.
+#
+# PREREQUISITO: Prometheus Adapter installato nel cluster, che espone
+# `ws_active_connections` come Pods metric all'API custom.metrics.k8s.io.
+#   helm install prometheus-adapter prometheus-community/prometheus-adapter \
+#     -n game --set prometheus.url=http://prometheus.game.svc
+#
+# Una volta disponibile la metrica, aggiungere il seguente blocco a `spec.metrics`
+# del HPA sopra (l'HPA scala sul MASSIMO tra le metriche, quindi convive con CPU):
+#
+#   - type: Pods
+#     pods:
+#       metric:
+#         name: ws_active_connections
+#       target:
+#         type: AverageValue
+#         averageValue: "80"   # ~80 connessioni WS attive per pod → scale-up
+#
+# Lasciato commentato per non rompere `kubectl apply -f k8s/backend/` su cluster
+# senza Prometheus Adapter (l'HPA andrebbe in errore sulla metrica mancante).

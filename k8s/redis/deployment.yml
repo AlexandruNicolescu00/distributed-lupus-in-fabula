@@ -128,7 +128,9 @@ data:
 
     # Memoria
     maxmemory 256mb
-    maxmemory-policy allkeys-lru
+    # volatile-lru: lo stato di gioco è in chiavi con TTL; evita di evictare
+    # eventuali chiavi senza scadenza. (Rif. teoria: reliability/durabilità.)
+    maxmemory-policy volatile-lru
     maxmemory-samples 5
 
     # Pub/Sub buffer
