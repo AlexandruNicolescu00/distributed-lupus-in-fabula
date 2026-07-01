@@ -139,6 +139,12 @@ class RedisEvent(BaseModel):
     sender_id: str  # ID istanza backend (per deduplicazione)
     timestamp: float = Field(default_factory=time.time)
     payload: dict[str, Any] = Field(default_factory=dict)
+    # Se valorizzato, l'evento è PRIVATO (unicast) per uno specifico client: le
+    # repliche che ricevono il messaggio Pub/Sub lo consegnano solo alla propria
+    # socket locale di quel client (se presente), senza broadcast nella room.
+    # Serve a recapitare eventi privati (ruolo, esito veggente) anche quando il
+    # destinatario è connesso a una replica diversa da quella che li genera.
+    target_client_id: str | None = None
 
     def channel(self, prefix: str) -> str:
         """Restituisce il nome del canale Redis per questo evento."""

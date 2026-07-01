@@ -30,6 +30,14 @@ spec:
           image: game_frontend:latest
           imagePullPolicy: IfNotPresent
 
+          # Dominio del backend iniettato a runtime in config.js dall'entrypoint.
+          env:
+            - name: WS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: game-config
+                  key: WS_URL
+
           ports:
             - containerPort: 3000
               name: http

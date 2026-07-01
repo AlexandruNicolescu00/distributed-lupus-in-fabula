@@ -1,7 +1,8 @@
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useLobbyStore } from '@/stores/lobbyStore'
+import { lobbyApi } from '@/services/api'
 import castleBg from '@/assets/home3.png'
 
 const router = useRouter()
@@ -10,11 +11,69 @@ const lobbyStore = useLobbyStore()
 // ---- STATE UI ----
 const mode = ref(null)          // null | 'create' | 'join'
 const playerName = ref('')
-const lobbyCode = ref('')
+const lobbyCode = ref('')       // codice della lobby selezionata dalla lista
 const nameError = ref('')
 const codeError = ref('')
 
+// ---- LOBBY BROWSER ----
+// Le lobby aperte arrivano dal backend (REST /api/lobbies): il frontend non
+// interroga mai Redis direttamente. La lista è filtrabile con una ricerca testuale.
+const lobbies = ref([])
+const lobbySearch = ref('')
+const loadingLobbies = ref(false)
+const lobbiesError = ref('')
+let pollTimer = null
+const POLL_INTERVAL = 4000
+
 const isLoading = computed(() => lobbyStore.isLoading)
+
+const filteredLobbies = computed(() => {
+  const query = lobbySearch.value.trim().toLowerCase()
+  if (!query) return lobbies.value
+  return lobbies.value.filter(
+    (lobby) =>
+      lobby.code.toLowerCase().includes(query) ||
+      String(lobby.host ?? '').toLowerCase().includes(query),
+  )
+})
+
+async function fetchLobbies() {
+  loadingLobbies.value = true
+  lobbiesError.value = ''
+  try {
+    const data = await lobbyApi.listOpen()
+    lobbies.value = Array.isArray(data?.lobbies) ? data.lobbies : []
+    // Se la lobby selezionata non è più disponibile, deseleziona.
+    if (lobbyCode.value && !lobbies.value.some((l) => l.code === lobbyCode.value)) {
+      lobbyCode.value = ''
+    }
+  } catch (err) {
+    lobbiesError.value = 'Impossibile caricare le lobby disponibili.'
+    console.error('[Home] fetchLobbies:', err)
+  } finally {
+    loadingLobbies.value = false
+  }
+}
+
+function startLobbyPolling() {
+  fetchLobbies()
+  stopLobbyPolling()
+  pollTimer = setInterval(fetchLobbies, POLL_INTERVAL)
+}
+
+function stopLobbyPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+function selectLobby(code) {
+  lobbyCode.value = code
+  codeError.value = ''
+}
+
+onUnmounted(stopLobbyPolling)
 
 // ---- VALIDAZIONE LOCALE ----
 function validateName() {
@@ -42,7 +101,7 @@ function validateName() {
 
 function validateCode() {
   if (!lobbyCode.value.trim()) {
-    codeError.value = 'Inserisci il codice lobby'
+    codeError.value = 'Seleziona una lobby dalla lista'
     return false
   }
   codeError.value = ''
@@ -92,6 +151,14 @@ function selectMode(selected) {
   nameError.value = ''
   codeError.value = ''
   lobbyStore.error && (lobbyStore.error = null)
+
+  if (selected === 'join') {
+    lobbyCode.value = ''
+    lobbySearch.value = ''
+    startLobbyPolling()
+  } else {
+    stopLobbyPolling()
+  }
 }
 </script>
 
@@ -185,23 +252,57 @@ function selectMode(selected) {
         </div>
 
         <div class="field">
-          <label class="field-label">Codice Lobby</label>
+          <div class="field-label-row">
+            <label class="field-label">Lobby disponibili</label>
+            <button
+              class="refresh-btn"
+              type="button"
+              :disabled="loadingLobbies"
+              @click="fetchLobbies"
+              title="Aggiorna la lista"
+            >
+              <span :class="{ 'refresh-spin': loadingLobbies }">⟳</span>
+            </button>
+          </div>
+
           <input
-            v-model="lobbyCode"
-            class="field-input field-input--code"
-            :class="{ 'field-input--error': codeError }"
+            v-model="lobbySearch"
+            class="field-input"
             type="text"
-            placeholder="es. WOLF-4821"
-            maxlength="12"
-            @keyup.enter="joinLobby"
-            @input="codeError = ''"
+            placeholder="🔍 Cerca per codice o host…"
           />
+
+          <div class="lobby-list" :class="{ 'lobby-list--error': codeError }">
+            <p v-if="lobbiesError" class="lobby-empty">{{ lobbiesError }}</p>
+            <p v-else-if="loadingLobbies && lobbies.length === 0" class="lobby-empty">
+              Caricamento lobby…
+            </p>
+            <p v-else-if="filteredLobbies.length === 0" class="lobby-empty">
+              {{ lobbies.length === 0 ? 'Nessuna lobby aperta al momento' : 'Nessun risultato per la ricerca' }}
+            </p>
+
+            <button
+              v-for="lobby in filteredLobbies"
+              :key="lobby.code"
+              type="button"
+              class="lobby-item"
+              :class="{ 'lobby-item--active': lobby.code === lobbyCode }"
+              @click="selectLobby(lobby.code)"
+              @dblclick="joinLobby"
+            >
+              <span class="lobby-item-code">{{ lobby.code }}</span>
+              <span class="lobby-item-meta">
+                <span class="lobby-item-host">👑 {{ lobby.host }}</span>
+                <span class="lobby-item-count">👥 {{ lobby.player_count }}</span>
+              </span>
+            </button>
+          </div>
           <span v-if="codeError" class="field-error">{{ codeError }}</span>
         </div>
 
         <span v-if="lobbyStore.error" class="server-error">{{ lobbyStore.error }}</span>
 
-        <button class="btn-primary" @click="joinLobby" :disabled="isLoading">
+        <button class="btn-primary" @click="joinLobby" :disabled="isLoading || !lobbyCode">
           <span v-if="isLoading" class="spinner"></span>
           <span v-else>🚪 Entra nella Lobby</span>
         </button>
@@ -467,6 +568,98 @@ function selectMode(selected) {
   font-size: 1.1rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+/* ---- LOBBY BROWSER ---- */
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.refresh-btn {
+  background: none;
+  border: none;
+  color: rgba(232,200,122,0.85);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0 0.2rem;
+  line-height: 1;
+  transition: color 0.2s, transform 0.2s;
+}
+.refresh-btn:hover:not(:disabled) { color: #e8c87a; transform: rotate(90deg); }
+.refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.refresh-spin { display: inline-block; animation: spin 0.8s linear infinite; }
+
+.lobby-list {
+  margin-top: 0.5rem;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.4rem;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 12px;
+  background: rgba(0,0,0,0.2);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(232,200,122,0.4) transparent;
+}
+.lobby-list--error { border-color: rgba(220,60,60,0.5); }
+.lobby-list::-webkit-scrollbar { width: 8px; }
+.lobby-list::-webkit-scrollbar-thumb {
+  background: rgba(232,200,122,0.35);
+  border-radius: 4px;
+}
+
+.lobby-empty {
+  text-align: center;
+  color: rgba(232,224,213,0.6);
+  font-style: italic;
+  font-size: 0.9rem;
+  padding: 1.4rem 0.5rem;
+}
+
+.lobby-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.7rem 0.9rem;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  background: rgba(255,255,255,0.03);
+  color: #e8e0d5;
+  cursor: pointer;
+  font-family: 'Crimson Text', serif;
+  transition: all 0.18s ease;
+}
+.lobby-item:hover {
+  border-color: rgba(232,200,122,0.35);
+  background: rgba(232,200,122,0.08);
+}
+.lobby-item--active {
+  border-color: rgba(232,200,122,0.7);
+  background: rgba(232,200,122,0.14);
+  box-shadow: 0 0 0 1px rgba(232,200,122,0.4) inset;
+}
+
+.lobby-item-code {
+  font-family: 'Cinzel', serif;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #e8c87a;
+  text-transform: uppercase;
+}
+.lobby-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  font-size: 0.85rem;
+  color: rgba(232,224,213,0.85);
+  white-space: nowrap;
 }
 
 .field-error {

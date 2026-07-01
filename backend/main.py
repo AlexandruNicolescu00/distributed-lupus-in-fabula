@@ -3,7 +3,6 @@
 
 import asyncio
 import logging
-import random
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -19,9 +18,14 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from core.config import get_settings
 from core.instance import INSTANCE_ID
 from core.messages import EventType, RedisEvent, WSMessage
-from core.metrics import WS_MESSAGES_RECEIVED_TOTAL, WS_MESSAGES_SENT_TOTAL
+from core.metrics import (
+    WS_BROADCAST_DURATION_SECONDS,
+    WS_MESSAGE_SIZE_BYTES,
+    WS_MESSAGES_RECEIVED_TOTAL,
+    WS_MESSAGES_SENT_TOTAL,
+)
 from core.state_store import GameStateStore
-from models.game import Phase, Role
+from models.game import Phase
 from models.events import ErrorPayload
 from pubsub.manager import PubSubManager
 from services.game_runtime import GameRuntime
@@ -56,62 +60,20 @@ sio = socketio.AsyncServer(
 
 # ── Istanze singleton ─────────────────────────────────────────────────────────
 connection_manager = ConnectionManager()
-pubsub_manager     = PubSubManager(sio)
+pubsub_manager     = PubSubManager(sio, connection_manager)
 state_store        = GameStateStore()
 phase_tasks: dict[str, asyncio.Task] = {}
+background_tasks: list[asyncio.Task] = []
 game_runtime: GameRuntime | None = None
 lobby_runtime: LobbyRuntime | None = None
 
+# Intervalli dei loop di background (rif. teoria: dependability/recovery ed
+# eventual-consistency). Lo sweeper recupera i timer di fase scaduti se la replica
+# che li aveva schedulati muore; l'anti-entropy ribroadcasta lo snapshot per far
+# convergere i client che hanno perso eventi Pub/Sub.
+SWEEPER_INTERVAL = 2.0        # secondi
+ANTI_ENTROPY_INTERVAL = 10.0  # secondi
 
-def _normalize_role_setup(total_players: int, role_setup: dict | None) -> dict[str, int]:
-    role_setup = role_setup or {}
-    safe_total = max(0, total_players)
-    seers = min(max(int(role_setup.get("seers", 0)), 0), 1 if safe_total >= 5 else 0)
-    wolves = max(1, int(role_setup.get("wolves", 1)))
-
-    wolves_cap = max(1, (max(safe_total - seers, 0) - 1) // 2)
-    wolves = min(wolves, wolves_cap)
-
-    villagers = max(0, safe_total - wolves - seers)
-
-    while villagers <= wolves and wolves > 1:
-      wolves -= 1
-      villagers = max(0, safe_total - wolves - seers)
-
-    while villagers <= wolves and seers > 0:
-      seers -= 1
-      villagers = max(0, safe_total - wolves - seers)
-
-    return {"wolves": wolves, "seers": seers, "villagers": villagers}
-
-
-def _assign_roles(players: list[dict], role_setup: dict, room_id: str) -> list[dict]:
-    ordered_players = sorted(
-        players,
-        key=lambda player: (
-            player.get("joined_at", float("inf")),
-            player.get("player_id", ""),
-        ),
-    )
-    normalized_setup = _normalize_role_setup(len(ordered_players), role_setup)
-    role_pool = (
-        [Role.WOLF.value] * normalized_setup["wolves"]
-        + [Role.SEER.value] * normalized_setup["seers"]
-        + [Role.VILLAGER.value] * normalized_setup["villagers"]
-    )
-
-    rng = random.Random(f"{room_id}:{'|'.join(player['player_id'] for player in ordered_players)}")
-    rng.shuffle(role_pool)
-
-    assigned_players = []
-    for index, player in enumerate(ordered_players):
-        assigned_players.append({
-            **player,
-            "role": role_pool[index] if index < len(role_pool) else Role.VILLAGER.value,
-            "alive": player.get("alive", True),
-        })
-
-    return assigned_players
 
 def _domain_redis():
     if state_store._redis is None:
@@ -133,6 +95,27 @@ def _schedule_phase_timer(room_id: str, timer_end: float | None) -> None:
     async def _runner():
         try:
             await asyncio.sleep(max(0.0, timer_end - time.time()))
+
+            # Il timer è scaduto: non è più "pendente". Ci togliamo da phase_tasks
+            # PRIMA di avanzare. Se l'avanzamento porta a fine partita,
+            # _emit_phase_outcome chiama _cancel_phase_timer: senza questa rimozione
+            # cancellerebbe QUESTA stessa task, abortendo l'emissione di game_ended
+            # (i client resterebbero bloccati sul timer a 0:00).
+            if phase_tasks.get(room_id) is asyncio.current_task():
+                phase_tasks.pop(room_id, None)
+
+            # Guardia anti-timer-stale: i timer sono locali alla replica. Se la fase
+            # è avanzata su un'ALTRA replica, il timer della fase precedente qui non
+            # è stato cancellato e scadrebbe durante una fase successiva, avanzandola
+            # in anticipo. Avanza solo se il deadline della fase CORRENTE è passato.
+            from core import state_store as _rs
+            current_timer_end = await _rs.get_timer_end(_domain_redis(), room_id)
+            if current_timer_end is not None and time.time() < current_timer_end - 0.5:
+                logger.debug(
+                    "Timer stale ignorato | room=%s deadline_corrente=%s", room_id, current_timer_end
+                )
+                return
+
             if game_runtime is not None:
                 await game_runtime.advance_phase_and_emit(room_id)
         except asyncio.CancelledError:
@@ -143,18 +126,52 @@ def _schedule_phase_timer(room_id: str, timer_end: float | None) -> None:
 
     phase_tasks[room_id] = asyncio.create_task(_runner(), name=f"phase-timer:{room_id}")
 
+
+async def _timer_sweeper_loop() -> None:
+    """Recupera periodicamente i timer di fase scaduti (P7): rende la progressione
+    della partita indipendente dalla replica che ha schedulato il timer."""
+    while True:
+        try:
+            await asyncio.sleep(SWEEPER_INTERVAL)
+            if game_runtime is not None:
+                await game_runtime.recover_expired_timers()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Errore nello sweeper timer")
+
+
+async def _anti_entropy_loop() -> None:
+    """Ribroadcast periodico dello snapshot autoritativo (P9): fa convergere i
+    client che hanno perso eventi Pub/Sub (at-most-once)."""
+    while True:
+        try:
+            await asyncio.sleep(ANTI_ENTROPY_INTERVAL)
+            if game_runtime is not None:
+                await game_runtime.broadcast_state_snapshots()
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Errore nell'anti-entropy")
+
+
 # ── Lifespan FastAPI ──────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Backend avvio | instance_id=%s | env=%s", INSTANCE_ID, settings.app_env)
     await pubsub_manager.startup()
     await state_store.startup()
+    background_tasks.append(asyncio.create_task(_timer_sweeper_loop(), name="timer-sweeper"))
+    background_tasks.append(asyncio.create_task(_anti_entropy_loop(), name="anti-entropy"))
     yield
     logger.info("Backend spegnimento | instance_id=%s", INSTANCE_ID)
     for task in phase_tasks.values():
         task.cancel()
-    await asyncio.gather(*phase_tasks.values(), return_exceptions=True)
+    for task in background_tasks:
+        task.cancel()
+    await asyncio.gather(*phase_tasks.values(), *background_tasks, return_exceptions=True)
     phase_tasks.clear()
+    background_tasks.clear()
     await pubsub_manager.shutdown()
     await state_store.shutdown()
 
@@ -187,6 +204,27 @@ async def health():
         "active_rooms":      connection_manager.active_rooms(),
         "total_connections": connection_manager.client_count(),
     }
+
+
+# ── Lobby browser ─────────────────────────────────────────────────────────────
+@app.get("/api/lobbies")
+async def list_lobbies():
+    """Elenca le lobby aperte (fase LOBBY) per il browser di lobby lato client.
+
+    Serve la lista a scorrimento con ricerca in HomeView: il frontend interroga
+    questo endpoint invece di accedere direttamente a Redis. Ogni replica è
+    stateless e legge lo stesso stato condiviso, quindi qualunque backend dietro
+    il reverse proxy può rispondere.
+    """
+    try:
+        lobbies = await state_store.list_open_rooms()
+    except Exception:
+        logger.exception("Errore nel recupero delle lobby aperte")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Impossibile recuperare le lobby disponibili"},
+        )
+    return {"lobbies": lobbies}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -273,7 +311,7 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     if game_runtime:
         await game_runtime.emit_role_assignment_for_player(room_id, client_id, sid)
 
-    # Notifica tutti gli altri client (locale + altre istanze via Redis) usando la LISTA UNIFICATA E ORDINATA
+    # Notifica tutti gli altri client (locale + altre istanze via Redis)
     join_event = RedisEvent(
         event_type=EventType.PLAYER_JOINED,
         room_id=room_id,
@@ -406,6 +444,9 @@ async def disconnect(sid: str):
                 payload={"state": sync_state or {}, "players": sync_players},
             )
             await sio.emit(EventType.GAME_STATE_SYNC, WSMessage.from_redis_event(sync_event).model_dump(), room=room_id)
+            # Propaga anche alle altre repliche, altrimenti i client connessi a
+            # un'altra istanza non vedono lo stato finale (ruoli/morti) aggiornato.
+            await pubsub_manager.publish(sync_event)
             _cancel_phase_timer(room_id)
 
 
@@ -472,6 +513,7 @@ async def _emit_authoritative_event(
     *,
     to: str | None = None,
     publish: bool = True,
+    target_client_id: str | None = None,
 ) -> None:
     serializable_payload = asdict(payload) if hasattr(payload, "__dataclass_fields__") else payload
     redis_event = RedisEvent(
@@ -479,12 +521,28 @@ async def _emit_authoritative_event(
         room_id=room_id,
         sender_id=INSTANCE_ID,
         payload=serializable_payload,
+        target_client_id=target_client_id,
     )
     ws_msg = WSMessage.from_redis_event(redis_event)
     out = ws_msg.model_dump()
 
+    # ── Evento PRIVATO (unicast) recapitabile cross-replica ──────────────────
+    # Consegna locale immediata se il destinatario è su questa replica (bassa
+    # latenza) E pubblica su Redis così la replica che ospita davvero il client
+    # possa recapitarlo. La dedup (sender_id) evita il doppio invio sull'origine.
+    if target_client_id is not None:
+        if to is not None:
+            await sio.emit(event_type, out, to=to)
+            WS_MESSAGES_SENT_TOTAL.labels(instance_id=INSTANCE_ID, event_type=event_type).inc()
+        await pubsub_manager.publish(redis_event)
+        return
+
     if to is None:
+        start = time.perf_counter()
         await sio.emit(event_type, out, room=room_id)
+        WS_BROADCAST_DURATION_SECONDS.labels(instance_id=INSTANCE_ID).observe(
+            time.perf_counter() - start
+        )
     else:
         await sio.emit(event_type, out, to=to)
 
@@ -555,6 +613,9 @@ async def catch_all(event: str, sid: str, data: dict):
     WS_MESSAGES_RECEIVED_TOTAL.labels(
         instance_id=INSTANCE_ID, event_type=event
     ).inc()
+    WS_MESSAGE_SIZE_BYTES.labels(instance_id=INSTANCE_ID).observe(
+        len(str(data).encode("utf-8")) if data is not None else 0
+    )
 
     payload = data if isinstance(data, dict) else {"raw": data}
     try:
@@ -669,6 +730,10 @@ async def catch_all(event: str, sid: str, data: dict):
             )
             ws_msg = WSMessage.from_redis_event(sync_event)
             await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), room=room_id)
+            # Propaga anche alle ALTRE repliche: senza questo publish, i client
+            # connessi a un'altra istanza non ricevono lo snapshot ripulito e
+            # continuano a vedere il vecchio host (fantasma) nella lobby ricostruita.
+            await pubsub_manager.publish(sync_event)
             return
         # ===================================================================
 

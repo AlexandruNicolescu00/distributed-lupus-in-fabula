@@ -103,12 +103,15 @@ async def assign_roles(
         else:
             assignment[pid] = Role.VILLAGER
 
+    # Persist each player with their role (1 lettura hgetall + 1 pipeline di write
+    # invece di O(n) round-trip — rif. teoria: scalabilità).
+    existing = await rs.get_all_players(r, game_id)
+    to_persist = []
     for pid, role in assignment.items():
-        player = await rs.get_player(r, game_id, pid)
-        if player is None:
-            player = Player(player_id=pid, username=pid)
+        player = existing.get(pid) or Player(player_id=pid, username=pid)
         player.role = role
-        await rs.set_player(r, game_id, player)
+        to_persist.append(player)
+    await rs.set_players_bulk(r, game_id, to_persist)
 
     wolf_ids = [pid for pid, role in assignment.items() if role == Role.WOLF]
     logger.info(
@@ -322,11 +325,14 @@ async def eliminate_player(
 
     await rs.clear_votes(r, game_id)
 
+    # Reset has_voted flag for all remaining players (pipeline: 1 RTT)
     all_players = await rs.get_all_players(r, game_id)
+    to_reset = []
     for p in all_players.values():
         if p.player_id != player_id and p.has_voted:
             p.has_voted = False
-            await rs.set_player(r, game_id, p)
+            to_reset.append(p)
+    await rs.set_players_bulk(r, game_id, to_reset)
 
     state_raw = await rs.get_game_state(r, game_id)
     round_number = state_raw.get("round", 0) if state_raw else 0
@@ -498,11 +504,14 @@ async def resolve_night(
     await rs.clear_wolf_votes(r, game_id)
     await rs.clear_seer_action(r, game_id)
 
+    # Reset has_acted for all players (next night) — pipeline: 1 RTT
     all_players = await rs.get_all_players(r, game_id)
+    to_reset = []
     for p in all_players.values():
         if p.has_acted:
             p.has_acted = False
-            await rs.set_player(r, game_id, p)
+            to_reset.append(p)
+    await rs.set_players_bulk(r, game_id, to_reset)
 
     return {
         "killed_player_id": killed_player_id,

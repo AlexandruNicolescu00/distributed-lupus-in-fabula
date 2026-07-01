@@ -5,6 +5,7 @@ import { useGameStore, PHASES, ROLES } from '@/stores/gameStore'
 import { useLobbyStore } from '@/stores/lobbyStore'
 import { useChatStore } from '@/stores/chatStore'
 import { useSocket } from '@/composables/useSocket'
+import { getWsUrl } from '@/config'
 import wolfNight   from '@/assets/wolf_night1.png'
 import farmerNight from '@/assets/farmer_night1.png'
 import seerNight   from '@/assets/seer_night1.png'
@@ -53,7 +54,7 @@ onMounted(async () => {
     game.bootstrapFromLobby(lobby.players, clientId, lobby.roleSummary, lobbyCode)
   }
 
-  const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:8000'
+  const wsUrl = getWsUrl()
   connect(wsUrl, {
     auth: {
       client_id: clientId,

@@ -40,7 +40,14 @@ async def ensure_domain_player(
 
     state = await rs.get_game_state(redis, room_id)
     if state is None:
-        await rs.set_game_state(redis, room_id, GameState(game_id=room_id, host_id=client_id))
+        # Creazione ATOMICA dello stato: anche se più client entrano insieme in
+        # una stanza nuova su repliche diverse, solo uno diventa host (SET NX).
+        # Evita la race 'doppio host'. (Rif. teoria: consistency / SMR.)
+        created = await rs.create_game_state_if_absent(redis, room_id, client_id)
+        if not created:
+            state = await rs.get_game_state(redis, room_id)
+            if state is not None and not state.get("host_id"):
+                await rs.patch_game_state(redis, room_id, host_id=client_id)
     elif not state.get("host_id"):
         await rs.patch_game_state(redis, room_id, host_id=client_id)
 
@@ -126,7 +133,13 @@ async def build_room_snapshot(redis: aioredis.Redis, room_id: str) -> dict:
     ready_player_ids = state.get("ready_player_ids", [])
     phase = state.get("phase", Phase.LOBBY.value)
     reveal_roles = phase == Phase.ENDED.value
-    
+
+    # I voti del giorno (VOTING) sono pubblici: includerli nello snapshot autoritativo
+    # così l'anti-entropy e i client che si (ri)sincronizzano convergono sui voti
+    # CORRENTI invece di azzerarli. Fuori dalla fase VOTING la mappa è vuota.
+    # (I voti dei lupi restano segreti: NON entrano mai nello snapshot broadcast.)
+    vote_map = await rs.get_votes(redis, room_id) if phase == Phase.VOTING.value else {}
+
     return {
         "phase": phase,
         "round": state.get("round", 0),
@@ -137,6 +150,7 @@ async def build_room_snapshot(redis: aioredis.Redis, room_id: str) -> dict:
         "seer_count": state.get("seer_count"),
         "host_id": host_id,
         "ready_player_ids": ready_player_ids,
+        "vote_map": vote_map,
         "players": [
             {
                 "player_id": p.player_id,

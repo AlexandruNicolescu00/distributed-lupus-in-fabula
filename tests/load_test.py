@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 # tests/load_test.py
-# python tests/load_test.py --url http://game.local --clients 200
+# python tests/load_test.py --url http://game.local --clients 500 --procs 4
+#
+# Generatore di carico Socket.IO MULTI-PROCESSO.
+# Un singolo event loop asyncio (un solo processo) satura ben prima del cluster:
+# gestire centinaia di WebSocket concorrenti + i loro ping su un unico loop fa
+# accodare gli handshake dietro il GIL finché scadono in timeout (falsi
+# "Connection error"). Qui i client vengono spartiti su più processi, ciascuno
+# col proprio event loop, così il carico è realmente simultaneo e il collo di
+# bottiglia torna a essere l'infrastruttura sotto test, non lo script.
 
 import argparse
 import asyncio
+import multiprocessing as mp
+import os
+import queue as queue_mod
 import sys
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from sio_client import SIOClient
 
@@ -20,6 +31,9 @@ GRN, RED, YLW, BLU, CYN, NC = (
     "\033[0;36m",
     "\033[0m",
 )
+
+# Chiavi dei contatori condivisi tra i processi (aggiornati live per il progress).
+_SHARED_KEYS = ("conn_attempted", "conn_ok", "conn_failed", "msgs_sent", "msgs_recv")
 
 
 @dataclass
@@ -34,47 +48,37 @@ class LoadTestConfig:
     timeout_conn:  float = 10.0
 
 
-@dataclass
-class Metrics:
-    connections_attempted:    int = 0
-    connections_ok:           int = 0
-    connections_failed:       int = 0
-    disconnections_unexpected:int = 0
-    messages_sent:            int = 0
-    messages_received:        int = 0
-    rtt_samples: list = field(default_factory=list)
-    errors:      list = field(default_factory=list)
-    start_time:  float = 0.0
-    end_time:    float = 0.0
+class ProcMetrics:
+    """Metriche locali a UN processo/event loop.
 
-    def elapsed(self):
-        return (self.end_time or time.monotonic()) - self.start_time
+    Niente lock: in un singolo event loop le coroutine cedono il controllo solo
+    sugli await, quindi gli incrementi semplici sono atomici tra loro.
+    """
 
-    def success_rate(self):
-        return (
-            (self.connections_ok / self.connections_attempted * 100)
-            if self.connections_attempted > 0
-            else 0
-        )
-
-    def rtt_p95(self):
-        if not self.rtt_samples:
-            return 0
-        s = sorted(self.rtt_samples)
-        return s[int(0.95 * len(s))]
+    def __init__(self):
+        self.conn_attempted = 0
+        self.conn_ok        = 0
+        self.conn_failed    = 0
+        self.msgs_sent      = 0
+        self.msgs_recv      = 0
+        self.rtt_samples: list = []
+        self.errors:      list = []
 
 
-metrics      = Metrics()
-metrics_lock = asyncio.Lock()
-
-
-async def client_worker(client_id: str, room_id: str, cfg: LoadTestConfig, stop_event: asyncio.Event):
-    client     = SIOClient(
+async def client_worker(
+    client_id: str,
+    room_id: str,
+    cfg: LoadTestConfig,
+    stop_event: asyncio.Event,
+    m: ProcMetrics,
+):
+    client = SIOClient(
         name=client_id,
         base_url=cfg.sio_url,
         room_id=room_id,
         client_id=client_id,
         reconnection=False,
+        conn_timeout=cfg.timeout_conn,
     )
     my_pending: dict[str, float] = {}
 
@@ -86,20 +90,13 @@ async def client_worker(client_id: str, room_id: str, cfg: LoadTestConfig, stop_
             data = json.loads(data)
         msg_id = data.get("payload", {}).get("msg_id")
         if msg_id in my_pending:
-            async with metrics_lock:
-                metrics.messages_received += 1
-                metrics.rtt_samples.append(
-                    (time.monotonic() - my_pending.pop(msg_id)) * 1000
-                )
+            m.msgs_recv += 1
+            m.rtt_samples.append((time.monotonic() - my_pending.pop(msg_id)) * 1000)
 
     try:
-        async with metrics_lock:
-            metrics.connections_attempted += 1
-
+        m.conn_attempted += 1
         await client.connect()
-
-        async with metrics_lock:
-            metrics.connections_ok += 1
+        m.conn_ok += 1
 
         while not stop_event.is_set():
             msg_id = uuid.uuid4().hex
@@ -108,53 +105,54 @@ async def client_worker(client_id: str, room_id: str, cfg: LoadTestConfig, stop_
             # → _broadcast_passthrough) lo ri-emette con lo stesso nome, così
             # l'handler on_action riceve l'eco e misura l'RTT. msg_id va al primo
             # livello del payload perché finisce nell'envelope WSMessage.payload.
-            await client.send(
-                "player_action",
-                {"msg_id": msg_id, "text": "ping"},
-            )
-            async with metrics_lock:
-                metrics.messages_sent += 1
+            await client.send("player_action", {"msg_id": msg_id, "text": "ping"})
+            m.msgs_sent += 1
             await asyncio.sleep(cfg.send_interval)
 
     except Exception as e:
-        async with metrics_lock:
-            metrics.connections_failed += 1
-            metrics.errors.append(
-                f"Conn Error ({client_id[-7:]}): {type(e).__name__}: {e}"
-            )
+        m.conn_failed += 1
+        # Tiene solo gli ultimi errori per non gonfiare la coda inter-processo.
+        m.errors.append(f"Conn Error ({client_id[-8:]}): {type(e).__name__}: {e}")
+        if len(m.errors) > 5:
+            m.errors = m.errors[-5:]
     finally:
         await client.close()
 
 
-async def progress_reporter(cfg: LoadTestConfig, stop_event: asyncio.Event):
-    start = time.monotonic()
-    while not stop_event.is_set():
-        await asyncio.sleep(2)
-        async with metrics_lock:
-            print(
-                f"  [{time.monotonic()-start:4.0f}s / {cfg.duration_s}s] "
-                f"Conn: {metrics.connections_ok} | Sent: {metrics.messages_sent} | Fail: {metrics.connections_failed}"
-            )
+def _flush(m: ProcMetrics, shared: dict, last: dict):
+    """Riversa i delta dei contatori locali nei Value condivisi (progress live)."""
+    for key in _SHARED_KEYS:
+        val = getattr(m, key)
+        delta = val - last[key]
+        if delta:
+            with shared[key].get_lock():
+                shared[key].value += delta
+            last[key] = val
 
 
-async def run_load_test(cfg: LoadTestConfig):
-    print(
-        f"{'='*60}\n  SIO Load Test: {cfg.num_clients} clients | {cfg.num_rooms} rooms\n{'='*60}"
-    )
+async def _flush_loop(m: ProcMetrics, shared: dict, stop: asyncio.Event):
+    last = {k: 0 for k in _SHARED_KEYS}
+    try:
+        while not stop.is_set():
+            await asyncio.sleep(0.5)
+            _flush(m, shared, last)
+    finally:
+        _flush(m, shared, last)
 
-    metrics.start_time = time.monotonic()
-    stop_event         = asyncio.Event()
-    room_ids           = [f"room_{i}" for i in range(cfg.num_rooms)]
 
-    print(f"\n{CYN}▸ Fase 1 — Avvio Client{NC}")
-    reporter = asyncio.create_task(progress_reporter(cfg, stop_event))
+async def run_proc_async(client_indices: list[int], cfg: LoadTestConfig, shared: dict) -> dict:
+    m          = ProcMetrics()
+    stop_event = asyncio.Event()
+    room_ids   = [f"room_{i}" for i in range(cfg.num_rooms)]
+
+    flusher = asyncio.create_task(_flush_loop(m, shared, stop_event))
 
     workers = []
-    for i in range(cfg.num_clients):
+    for idx in client_indices:
         workers.append(
             asyncio.create_task(
                 client_worker(
-                    f"load_{i:03d}", room_ids[i % cfg.num_rooms], cfg, stop_event
+                    f"load_{idx:04d}", room_ids[idx % cfg.num_rooms], cfg, stop_event, m
                 )
             )
         )
@@ -162,29 +160,137 @@ async def run_load_test(cfg: LoadTestConfig):
 
     await asyncio.sleep(cfg.duration_s)
 
-    print(f"\n{CYN}▸ Fase 2 — Shutdown...{NC}")
     stop_event.set()
     await asyncio.gather(*workers, return_exceptions=True)
-    reporter.cancel()
-    metrics.end_time = time.monotonic()
+    flusher.cancel()
+    try:
+        await flusher
+    except asyncio.CancelledError:
+        pass
 
-    print_results()
+    return {
+        "conn_attempted": m.conn_attempted,
+        "conn_ok":        m.conn_ok,
+        "conn_failed":    m.conn_failed,
+        "msgs_sent":      m.msgs_sent,
+        "msgs_recv":      m.msgs_recv,
+        "rtt_samples":    m.rtt_samples,
+        "errors":         m.errors,
+    }
 
 
-def print_results():
-    m = metrics
+def proc_entry(client_indices: list[int], cfg: LoadTestConfig, shared: dict, result_q: mp.Queue):
+    """Entrypoint del processo figlio (deve stare a livello modulo per lo spawn)."""
+    try:
+        result = asyncio.run(run_proc_async(client_indices, cfg, shared))
+    except Exception as e:  # non far morire il parent in attesa del risultato
+        result = {
+            "conn_attempted": 0, "conn_ok": 0, "conn_failed": len(client_indices),
+            "msgs_sent": 0, "msgs_recv": 0, "rtt_samples": [],
+            "errors": [f"Proc fatal: {type(e).__name__}: {e}"],
+        }
+    result_q.put(result)
+
+
+def _split(num_clients: int, procs: int) -> list[list[int]]:
+    """Spartisce gli indici client 0..N-1 in `procs` blocchi quasi uguali."""
+    chunks = [[] for _ in range(procs)]
+    for i in range(num_clients):
+        chunks[i % procs].append(i)
+    return [c for c in chunks if c]
+
+
+def rtt_p95(samples: list) -> float:
+    if not samples:
+        return 0.0
+    s = sorted(samples)
+    return s[int(0.95 * len(s))]
+
+
+def print_results(agg: dict):
+    attempted = agg["conn_attempted"]
+    ok        = agg["conn_ok"]
+    rate      = (ok / attempted * 100) if attempted else 0.0
     print(f"\n{'='*60}\n RISULTATI\n{'='*60}")
-    print(f" Tentate:    {m.connections_attempted}")
-    print(f" Riuscite:   {m.connections_ok} ({m.success_rate():.1f}%)")
-    print(f" Fallite:    {m.connections_failed}")
-    if m.rtt_samples:
-        print(f" RTT p95:    {m.rtt_p95():.2f} ms")
-    if m.errors:
-        print(f" Ultimo errore: {m.errors[-1]}")
+    print(f" Processi:   {agg['procs']}")
+    print(f" Tentate:    {attempted}")
+    print(f" Riuscite:   {ok} ({rate:.1f}%)")
+    print(f" Fallite:    {agg['conn_failed']}")
+    print(f" Msg inviati/ricevuti: {agg['msgs_sent']} / {agg['msgs_recv']}")
+    if agg["rtt_samples"]:
+        print(f" RTT p95:    {rtt_p95(agg['rtt_samples']):.2f} ms")
+    if agg["errors"]:
+        print(f" Ultimo errore: {agg['errors'][-1]}")
     print(f"{'='*60}\n")
 
 
+def run_load_test(cfg: LoadTestConfig, procs: int):
+    chunks = _split(cfg.num_clients, procs)
+    procs  = len(chunks)
+
+    per_room = -(-cfg.num_clients // cfg.num_rooms)  # ceil
+    print(f"{'='*60}")
+    print(f"  SIO Load Test: {cfg.num_clients} client | {cfg.num_rooms} room "
+          f"(~{per_room}/room) | {procs} processi")
+    print(f"  (~{cfg.num_clients // procs} client/processo, ramp ~"
+          f"{(cfg.num_clients // procs) * cfg.connect_delay:.0f}s)")
+    if per_room > 20:
+        print(f"  {YLW}ATTENZIONE: ~{per_room} giocatori/room è irrealistico per una "
+              f"partita di Lupus.\n  Il join broadcasta l'intera lista alla room "
+              f"(fan-out O(n²)) e ingolfa\n  l'accettazione dei connect. Usa --room-size "
+              f"per distribuire su più room.{NC}")
+    print(f"{'='*60}")
+
+    shared   = {k: mp.Value("i", 0) for k in _SHARED_KEYS}
+    result_q: mp.Queue = mp.Queue()
+
+    processes = [
+        mp.Process(target=proc_entry, args=(chunk, cfg, shared, result_q))
+        for chunk in chunks
+    ]
+
+    print(f"\n{CYN}▸ Fase 1 — Avvio client su {procs} processi{NC}")
+    start = time.monotonic()
+    for p in processes:
+        p.start()
+
+    # Raccoglie i risultati man mano che i processi finiscono (drenare la coda
+    # PRIMA dei join evita il deadlock del feeder thread con payload grandi),
+    # stampando intanto il progresso aggregato dai contatori condivisi.
+    results: list[dict] = []
+    while len(results) < len(processes):
+        try:
+            results.append(result_q.get(timeout=2))
+        except queue_mod.Empty:
+            pass
+        print(
+            f"  [{time.monotonic()-start:4.0f}s] "
+            f"Conn: {shared['conn_ok'].value} | "
+            f"Sent: {shared['msgs_sent'].value} | "
+            f"Recv: {shared['msgs_recv'].value} | "
+            f"Fail: {shared['conn_failed'].value}"
+        )
+
+    print(f"\n{CYN}▸ Fase 2 — Shutdown...{NC}")
+    for p in processes:
+        p.join()
+
+    agg = {
+        "procs": procs,
+        "conn_attempted": sum(r["conn_attempted"] for r in results),
+        "conn_ok":        sum(r["conn_ok"] for r in results),
+        "conn_failed":    sum(r["conn_failed"] for r in results),
+        "msgs_sent":      sum(r["msgs_sent"] for r in results),
+        "msgs_recv":      sum(r["msgs_recv"] for r in results),
+        "rtt_samples":    [x for r in results for x in r["rtt_samples"]],
+        "errors":         [e for r in results for e in r["errors"]],
+    }
+    print_results(agg)
+
+
 if __name__ == "__main__":
+    mp.freeze_support()  # necessario per lo spawn su Windows
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--url",
@@ -192,21 +298,56 @@ if __name__ == "__main__":
         help="Base URL Socket.IO (es: http://game.local)",
     )
     parser.add_argument("--clients",  type=int,   default=50)
-    parser.add_argument("--rooms",    type=int,   default=5)
+    parser.add_argument(
+        "--rooms", type=int, default=0,
+        help="Numero di room (0 = auto da --room-size). Pochi client in molte "
+             "room simula tanti giochi concorrenti, il workload distribuito reale.",
+    )
+    parser.add_argument(
+        "--room-size", type=int, default=8,
+        help="Giocatori per room quando --rooms=0 (default 8, partita realistica). "
+             "Valori alti gonfiano il fan-out del join e falsano il test.",
+    )
     parser.add_argument("--duration", type=float, default=20.0)
+    parser.add_argument(
+        "--procs", type=int, default=0,
+        help="Numero di processi worker (0 = auto: ~125 client/processo, max n. CPU)",
+    )
+    parser.add_argument("--connect-delay", type=float, default=0.05,
+                        help="Pausa tra un connect e l'altro DENTRO ogni processo")
+    parser.add_argument("--send-interval", type=float, default=0.5)
+    parser.add_argument("--connect-timeout", type=float, default=10.0,
+                        help="Timeout handshake per connessione. Sotto burst il "
+                             "server accetta ma risponde tardi: alza a 30 per non "
+                             "contare come falliti gli handshake solo lenti.")
     args = parser.parse_args()
+
+    # Auto: un processo ogni ~125 client, limitato dal numero di CPU disponibili.
+    if args.procs > 0:
+        procs = args.procs
+    else:
+        procs = max(1, min(os.cpu_count() or 4, -(-args.clients // 125)))
+    procs = min(procs, args.clients)
+
+    # Room: esplicite con --rooms, altrimenti derivate da --room-size così ogni
+    # room ha un numero realistico di giocatori (niente fan-out O(n²) sul join).
+    if args.rooms > 0:
+        num_rooms = args.rooms
+    else:
+        num_rooms = max(1, -(-args.clients // args.room_size))
 
     config = LoadTestConfig(
         sio_url=args.url,
         num_clients=args.clients,
-        num_rooms=args.rooms,
+        num_rooms=num_rooms,
         duration_s=args.duration,
-        send_interval=0.5,
-        connect_delay=0.05,
+        send_interval=args.send_interval,
+        connect_delay=args.connect_delay,
         mode="full",
+        timeout_conn=args.connect_timeout,
     )
 
     try:
-        asyncio.run(run_load_test(config))
+        run_load_test(config, procs)
     except KeyboardInterrupt:
         pass

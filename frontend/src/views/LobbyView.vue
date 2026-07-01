@@ -5,6 +5,7 @@ import { useLobbyStore } from '@/stores/lobbyStore'
 import { useGameStore, PHASES } from '@/stores/gameStore'
 import { useSocket } from '@/composables/useSocket'
 import { useClipboard } from '@/composables/useClipboard'
+import { getWsUrl } from '@/config'
 import PlayerCard from '@/components/PlayerCard.vue'
 import InfoBox    from '@/components/InfoBox.vue'
 import Lobby1 from '@/assets/Lobby1.png'
@@ -69,8 +70,8 @@ onMounted(async () => {
 
   // 4. CONNESSIONE AL BACKEND
   // Usiamo l'indirizzo del cluster o localhost. useSocket userà l'auth dal localStorage automaticamente.
-  const wsUrl = import.meta.env.VITE_WS_URL || 'http://localhost:8000'
-  
+  const wsUrl = getWsUrl()
+
   connect(wsUrl, {
     auth: {
       client_id: savedName,

@@ -7,7 +7,7 @@
  *   const lobby = await api.post('/lobby/create', { playerName: 'Marco' })
  */
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+import { getApiUrl } from '@/config'
 
 async function request(method, path, body = null) {
   const options = {
@@ -16,7 +16,7 @@ async function request(method, path, body = null) {
   }
   if (body) options.body = JSON.stringify(body)
 
-  const response = await fetch(`${BASE_URL}${path}`, options)
+  const response = await fetch(`${getApiUrl()}${path}`, options)
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: 'Errore sconosciuto' }))
@@ -38,6 +38,9 @@ export const api = {
 // -------------------------------------------------------
 
 export const lobbyApi = {
+  /** Elenca le lobby aperte (fase LOBBY) per il browser di lobby → { lobbies: [...] } */
+  listOpen: () => api.get('/api/lobbies'),
+
   /** Crea una nuova stanza, ritorna { lobbyCode, playerId } */
   create: (playerName) => api.post('/lobby/create', { playerName }),
 

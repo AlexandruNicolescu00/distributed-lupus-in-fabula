@@ -28,10 +28,12 @@ class SIOClient:
         room_id:   str,
         client_id: Optional[str] = None,
         reconnection: bool = False,   # False nei test per conteggio preciso
+        conn_timeout: float = 10.0,   # timeout handshake (alza sotto burst)
     ):
-        self.name      = name
-        self.base_url  = base_url
-        self.room_id   = room_id
+        self.name         = name
+        self.base_url     = base_url
+        self.room_id      = room_id
+        self.conn_timeout = conn_timeout
         self.client_id = client_id or f"test_{uuid.uuid4().hex[:8]}"
         self.instance_id: Optional[str] = None   # compilato al primo evento
 
@@ -56,9 +58,9 @@ class SIOClient:
             self.base_url,
             auth={"client_id": self.client_id, "room_id": self.room_id},
             transports=["websocket"],   # forza WS, evita long-polling nei test
-            wait_timeout=10,
+            wait_timeout=self.conn_timeout,
         )
-        await asyncio.wait_for(self._connected.wait(), timeout=10)
+        await asyncio.wait_for(self._connected.wait(), timeout=self.conn_timeout)
         print(f"  → {self.name} connesso | client_id={self.client_id[:16]}")
 
     async def reconnect(self) -> None:

@@ -34,6 +34,7 @@ class ConnectionManager:
     def __init__(self) -> None:
         self._rooms:   dict[str, set[str]] = defaultdict(set)
         self._clients: dict[str, str]      = {}   # sid → client_id
+        self._sid_room: dict[str, str]     = {}   # sid → room_id (indice O(1) per get_room_of)
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -41,6 +42,7 @@ class ConnectionManager:
         """Registra una nuova connessione Socket.IO."""
         self._rooms[room_id].add(sid)
         self._clients[sid] = client_id
+        self._sid_room[sid] = room_id
 
         WS_CONNECTIONS_TOTAL.labels(instance_id=INSTANCE_ID).inc()
         self._update_gauges()
@@ -54,6 +56,7 @@ class ConnectionManager:
         if not self._rooms[room_id]:
             del self._rooms[room_id]
         self._clients.pop(sid, None)
+        self._sid_room.pop(sid, None)
 
         WS_DISCONNECTIONS_TOTAL.labels(instance_id=INSTANCE_ID, reason=reason).inc()
         self._update_gauges()
@@ -71,11 +74,8 @@ class ConnectionManager:
     # ── Query ──────────────────────────────────────────────────────────────
 
     def get_room_of(self, sid: str) -> str | None:
-        """Restituisce la room_id di un sid, o None se non trovato."""
-        for room_id, sids in self._rooms.items():
-            if sid in sids:
-                return room_id
-        return None
+        """Restituisce la room_id di un sid, o None se non trovato. O(1) via indice."""
+        return self._sid_room.get(sid)
 
     def get_client_id(self, sid: str) -> str | None:
         return self._clients.get(sid)

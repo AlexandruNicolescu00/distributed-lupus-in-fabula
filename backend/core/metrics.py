@@ -73,6 +73,18 @@ REDIS_MESSAGES_DEDUPLICATED_TOTAL = Counter(
     labelnames=["instance_id"],
 )
 
+REDIS_PUBLISH_FAILURES_TOTAL = Counter(
+    name="redis_publish_failures_total",
+    documentation="PUBLISH Redis falliti dopo i retry (evento cross-replica perso)",
+    labelnames=["instance_id"],
+)
+
+REDIS_RECONNECTS_TOTAL = Counter(
+    name="redis_reconnects_total",
+    documentation="Riconnessioni del listener Pub/Sub a Redis dopo un errore di connessione",
+    labelnames=["instance_id"],
+)
+
 # ── Stanze e player ───────────────────────────────────────────────────────────
 
 ACTIVE_ROOMS = Gauge(

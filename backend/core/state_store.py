@@ -16,13 +16,18 @@ from dataclasses import asdict
 from typing import Any, Optional
 
 import redis.asyncio as aioredis
+from redis.exceptions import WatchError
 
 from core.config import get_settings
-from models.game import GameState, Player, Role
+from models.game import GameState, Phase, Player, Role
 
 logger = logging.getLogger(__name__)
 
-STATE_TTL = 3600  # seconds
+# TTL dello stato di gioco. Rinnovato a ogni scrittura. Tenuto ampio per non far
+# scadere una partita ATTIVA ma lunga / in fase di stallo (rif. teoria: reliability:
+# evitare perdita silenziosa di stato). Per partite tipiche < 1h restava a rischio
+# con 3600s; 6h dà margine senza rinunciare al GC delle stanze abbandonate.
+STATE_TTL = 6 * 3600  # seconds (6h)
 
 
 def _prefix() -> str:
@@ -69,6 +74,15 @@ def key_timer_end(game_id: str) -> str:
     return f"{_prefix()}:{game_id}:timer_end"
 
 
+def key_active_rooms() -> str:
+    """Set globale delle stanze con una partita in corso (per lo sweeper timer)."""
+    return f"{_prefix()}:active_rooms"
+
+
+def key_advance_lock(game_id: str) -> str:
+    return f"{_prefix()}:{game_id}:advancing"
+
+
 async def get_game_state(r: aioredis.Redis, game_id: str) -> Optional[dict]:
     raw = await r.get(key_state(game_id))
     if raw is None:
@@ -80,8 +94,8 @@ async def get_game_state(r: aioredis.Redis, game_id: str) -> Optional[dict]:
         return None
 
 
-async def set_game_state(r: aioredis.Redis, game_id: str, state: GameState) -> None:
-    data = {
+def _game_state_to_dict(state: GameState) -> dict:
+    return {
         "game_id": state.game_id,
         "phase": state.phase.value,
         "round": state.round,
@@ -92,15 +106,87 @@ async def set_game_state(r: aioredis.Redis, game_id: str, state: GameState) -> N
         "seer_count": state.seer_count,
         "host_id": state.host_id,
         "ready_player_ids": state.ready_player_ids,
+        # Versione monotona dello stato: incrementata ad ogni patch atomica.
+        # Serve come marcatore per l'anti-entropy / convergenza (rif. teoria:
+        # eventual-consistency) e per il debug delle divergenze tra repliche.
+        "state_version": 0,
     }
-    await r.setex(key_state(game_id), STATE_TTL, json.dumps(data))
+
+
+async def set_game_state(r: aioredis.Redis, game_id: str, state: GameState) -> None:
+    await r.setex(key_state(game_id), STATE_TTL, json.dumps(_game_state_to_dict(state)))
+
+
+async def create_game_state_if_absent(
+    r: aioredis.Redis, game_id: str, host_id: str
+) -> bool:
+    """Crea lo stato iniziale in modo ATOMICO (SET ... NX EX).
+
+    Ritorna True se lo stato è stato creato da QUESTA chiamata (→ il chiamante è
+    l'host). Evita la race condition 'doppio host' quando due client entrano
+    insieme in una stanza nuova gestiti da repliche diverse: senza atomicità
+    entrambi leggono `state is None` e si auto-eleggono host.
+    (Rif. teoria: consistency / atomic data object; SMR.)
+    """
+    data = _game_state_to_dict(GameState(game_id=game_id, host_id=host_id))
+    created = await r.set(key_state(game_id), json.dumps(data), nx=True, ex=STATE_TTL)
+    return bool(created)
 
 
 async def patch_game_state(r: aioredis.Redis, game_id: str, **fields) -> None:
-    current = await get_game_state(r, game_id) or {}
-    for key, value in fields.items():
-        current[key] = value.value if hasattr(value, "value") else value
-    await r.setex(key_state(game_id), STATE_TTL, json.dumps(current))
+    """Patch ATOMICA dello stato via WATCH/MULTI con retry ottimistico.
+
+    Il vecchio GET→modifica-in-Python→SETEX non era atomico tra repliche: due
+    patch concorrenti (es. update_settings + ready) producevano lost update.
+    Qui WATCH rileva la modifica concorrente e ri-tenta. Incrementa state_version.
+    (Rif. teoria: consistency — lost update / read-modify-write non atomico.)
+    """
+    key = key_state(game_id)
+    async with r.pipeline() as pipe:
+        while True:
+            try:
+                await pipe.watch(key)
+                raw = await pipe.get(key)
+                current = json.loads(raw) if raw else {}
+                for field, value in fields.items():
+                    current[field] = value.value if hasattr(value, "value") else value
+                current["state_version"] = int(current.get("state_version", 0)) + 1
+                pipe.multi()
+                pipe.setex(key, STATE_TTL, json.dumps(current))
+                await pipe.execute()
+                return
+            except WatchError:
+                # Un'altra replica ha modificato lo stato tra WATCH ed EXEC: ritenta.
+                continue
+
+
+# ── Stanze attive e lock di avanzamento fase (per lo sweeper) ────────────────
+
+async def add_active_room(r: aioredis.Redis, game_id: str) -> None:
+    await r.sadd(key_active_rooms(), game_id)
+
+
+async def remove_active_room(r: aioredis.Redis, game_id: str) -> None:
+    await r.srem(key_active_rooms(), game_id)
+
+
+async def get_active_rooms(r: aioredis.Redis) -> list[str]:
+    return list(await r.smembers(key_active_rooms()))
+
+
+async def acquire_advance_lock(
+    r: aioredis.Redis, game_id: str, owner: str, ttl: int = 10
+) -> bool:
+    """Lock NX a TTL breve che serializza l'avanzamento di fase tra i vari trigger
+    (timer di fase, evento manuale `phase:advance`, sweeper di recupero) e tra
+    repliche diverse. Solo il primo a prenderlo avanza; gli altri sono no-op.
+
+    Niente release esplicito: il TTL (10s) è molto inferiore alla durata di una
+    fase (45–120s), quindi l'auto-scadenza basta e si evita di rilasciare per
+    sbaglio un lock altrui. (Rif. teoria: state-machine-replication — una sola
+    esecuzione concordata dell'operazione.)
+    """
+    return bool(await r.set(key_advance_lock(game_id), owner, nx=True, ex=ttl))
 
 
 def _player_to_json(player: Player) -> str:
@@ -130,6 +216,20 @@ async def get_player(r: aioredis.Redis, game_id: str, player_id: str) -> Optiona
 async def set_player(r: aioredis.Redis, game_id: str, player: Player) -> None:
     await r.hset(key_players(game_id), player.player_id, _player_to_json(player))
     await r.expire(key_players(game_id), STATE_TTL)
+
+
+async def set_players_bulk(r: aioredis.Redis, game_id: str, players) -> None:
+    """Persiste più player in un'unica pipeline (1 RTT invece di O(n) round-trip).
+    Usato nei reset di fine fase e nell'assegnazione ruoli.
+    (Rif. teoria: scalabilità — latency/round-trip hiding.)"""
+    players = list(players)
+    if not players:
+        return
+    pipe = r.pipeline(transaction=False)
+    for player in players:
+        pipe.hset(key_players(game_id), player.player_id, _player_to_json(player))
+    pipe.expire(key_players(game_id), STATE_TTL)
+    await pipe.execute()
 
 
 async def get_all_players(r: aioredis.Redis, game_id: str) -> dict[str, Player]:
@@ -279,6 +379,48 @@ class GameStateStore:
         except json.JSONDecodeError:
             logger.warning("Stato stanza corrotto per room=%s", room_id)
             return None
+
+    async def list_open_rooms(self) -> list[dict[str, Any]]:
+        """Elenca le stanze attualmente joinabili (fase LOBBY) per il lobby browser.
+
+        Il frontend NON accede a Redis: interroga questo metodo tramite l'endpoint
+        REST `/api/lobbies`. Scandisce (SCAN, non KEYS, per non bloccare Redis) gli
+        snapshot di stanza `{prefix}:state:{room_id}` e ritorna un riassunto leggero
+        (codice, host, numero giocatori connessi) delle sole lobby non ancora avviate.
+        """
+        if not self._redis:
+            return []
+
+        prefix = key_room_state("")  # f"{prefix}:state:" — usato per estrarre il room_id
+        pattern = key_room_state("*")
+        rooms: list[dict[str, Any]] = []
+
+        async for full_key in self._redis.scan_iter(match=pattern, count=100):
+            raw = await self._redis.get(full_key)
+            if not raw:
+                continue
+            try:
+                snapshot = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            # Solo stanze in attesa: partite in corso o terminate non sono joinabili.
+            if snapshot.get("phase", Phase.LOBBY.value) != Phase.LOBBY.value:
+                continue
+
+            connected = [p for p in snapshot.get("players", []) if p.get("connected", True)]
+            if not connected:
+                continue
+
+            host = next((p for p in connected if p.get("is_host")), connected[0])
+            rooms.append({
+                "code": full_key[len(prefix):],
+                "host": host.get("username") or host.get("player_id"),
+                "player_count": len(connected),
+            })
+
+        rooms.sort(key=lambda room: room["code"])
+        return rooms
 
     async def update_state(self, room_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         if not self._redis:

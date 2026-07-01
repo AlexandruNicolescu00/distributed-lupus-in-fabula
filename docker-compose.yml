@@ -99,9 +99,10 @@ services:
       - "3000"
     environment:
       - NODE_ENV=production
-      # L'URL del WS viene iniettato a build-time o runtime;
-      # l'effettivo endpoint è ws://<host>/ws  (esposto da NGINX)
-      - VITE_WS_URL=ws://localhost/ws
+      # Dominio del backend iniettato a RUNTIME in config.js (vedi docker-entrypoint.sh).
+      # Vuoto → l'app usa la stessa origine della pagina (qui http://localhost via NGINX).
+      # In k8s lo stesso meccanismo riceve game.local dal ConfigMap.
+      - WS_URL=
     networks:
       - frontend_net
     restart: unless-stopped

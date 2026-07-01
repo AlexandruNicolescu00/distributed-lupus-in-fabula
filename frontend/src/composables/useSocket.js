@@ -1,5 +1,6 @@
 import { ref, onUnmounted } from 'vue'
 import { io } from 'socket.io-client'
+import { getWsUrl } from '@/config'
 
 // Istanza singleton — una sola connessione per tutta l'app
 let socket = null
@@ -29,7 +30,7 @@ export function useSocket() {
    * @param {string} url - es. 'http://localhost:8000'
    * @param {object} options - opzioni socket.io (auth, query, ecc.)
    */
-  function connect(url = import.meta.env.VITE_WS_URL ?? 'http://localhost:8000', options = {}) {
+  function connect(url = getWsUrl(), options = {}) {
     // Se il socket esiste già ed è connesso, non fare nulla
     if (socket?.connected) {
       isConnected.value = true
