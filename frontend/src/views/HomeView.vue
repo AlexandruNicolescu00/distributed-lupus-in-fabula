@@ -663,19 +663,23 @@ function selectMode(selected) {
 }
 
 .field-error {
-  font-size: 0.8rem;
-  color: #e05555;
+  font-size: 0.85rem;
+  color: #ff8a8a;
   font-style: italic;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
 }
 
 .server-error {
-  font-size: 0.85rem;
-  color: #e05555;
-  background: rgba(220,60,60,0.08);
-  border: 1px solid rgba(220,60,60,0.2);
-  border-radius: 8px;
-  padding: 0.6rem 0.9rem;
+  font-size: 0.9rem;
+  color: #ffd9d9;
+  background: rgba(60, 8, 8, 0.92);
+  border: 1px solid rgba(248, 113, 113, 0.6);
+  border-radius: 10px;
+  padding: 0.8rem 1rem;
   font-style: italic;
+  text-align: center;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  backdrop-filter: blur(4px);
 }
 
 /* ---- PULSANTE PRINCIPALE ---- */

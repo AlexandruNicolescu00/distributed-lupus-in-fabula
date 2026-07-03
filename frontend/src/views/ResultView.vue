@@ -413,19 +413,19 @@ const roleName = {
 /* ---- MOMENTO 3 — STATISTICHE ---- */
 .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8rem; margin-bottom: 2rem; }
 @media (max-width: 600px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
-.stat-card   { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; padding: 1rem 0.5rem; text-align: center; }
+.stat-card { background: rgba(8, 8, 18, 0.7); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 1rem 0.5rem; text-align: center; backdrop-filter: blur(4px);}
 .stat-value  { font-family: 'Cinzel', serif; font-size: 2rem; font-weight: 900; color: #e8c87a; line-height: 1; margin-bottom: 0.35rem; }
 .stat-label  { font-size: 0.72rem; color: rgba(232,224,213,0.35); letter-spacing: 0.08em; text-transform: uppercase; }
 
 /* Squadre affiancate */
 .teams-wrap  { display: grid; grid-template-columns: 1fr auto 1fr; gap: 1rem; align-items: start; }
 @media (max-width: 600px) { .teams-wrap { grid-template-columns: 1fr; } .team-divider { text-align: center; } }
-.team        { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 1rem; transition: border-color 0.5s, box-shadow 0.5s; }
+.team {background: rgba(8, 8, 18, 0.7); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 1rem; transition: border-color 0.5s, box-shadow 0.5s; backdrop-filter: blur(4px);}
 .team--winner { border-color: rgba(232,200,122,0.3); box-shadow: 0 0 20px rgba(232,200,122,0.08); }
 .team-title   { font-family: 'Cinzel', serif; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.1em; color: rgba(232,200,122,0.6); margin-bottom: 0.7rem; text-transform: uppercase; }
-.team-player  { display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; padding: 0.3rem 0; border-bottom: 1px solid rgba(255,255,255,0.04); color: rgba(232,224,213,0.7); }
+.team-player { display: flex; justify-content: space-between; align-items: center; font-size: 0.9rem; padding: 0.3rem 0; border-bottom: 1px solid rgba(255,255,255,0.04); color: rgba(232,224,213,0.95); }
+.team-player-status { font-size: 0.8rem; color: rgba(232,224,213,0.6); }
 .team-player:last-child { border-bottom: none; }
-.team-player-status { font-size: 0.8rem; color: rgba(232,224,213,0.3); }
 .team-divider { font-family: 'Cinzel', serif; font-size: 0.7rem; font-weight: 900; letter-spacing: 0.15em; color: rgba(232,224,213,0.15); padding-top: 1.2rem; align-self: center; }
 
 /* ---- AZIONI FINALI ---- */
