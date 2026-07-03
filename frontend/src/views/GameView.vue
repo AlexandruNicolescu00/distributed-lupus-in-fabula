@@ -324,7 +324,13 @@ function leaveGame() {
     </header>
 
     <div v-if="game.isPaused" class="pause-banner">
-      ⚠️ Partita in pausa: {{ game.pauseReason || 'In attesa che i giocatori rientrino' }}...
+      <span v-if="game.graceDeadline">
+        ⚠️ <strong>{{ game.graceClientId }}</strong> si è disconnesso —
+        rientra tra <strong class="grace-countdown">{{ game.graceSecondsLeft }}s</strong>
+      </span>
+      <span v-else>
+        ⚠️ Partita in pausa: {{ game.pauseReason || 'In attesa che i giocatori rientrino' }}...
+      </span>
     </div>
 
     <div class="game-body" v-show="!showNightOverlay">
@@ -472,7 +478,8 @@ function leaveGame() {
   color: rgba(232,224,213,0.85);
 }
 .action-feedback { padding: 1rem; background: rgba(192, 132, 252, 0.1); border-radius: 10px; font-size: 0.85rem; border: 1px solid rgba(192, 132, 252, 0.3); }
-.pause-banner { padding: 0.9rem 2rem; background: rgba(248,113,113,0.08); color: #fca5a5; border-bottom: 1px solid rgba(248,113,113,0.15); }
+.pause-banner { padding: 0.9rem 2rem; background: rgba(248,113,113,0.08); color: #fca5a5; border-bottom: 1px solid rgba(248,113,113,0.15); text-align: center; }
+.grace-countdown { font-size: 1.1em; color: #f87171; }
 .role-banner {
   position: fixed;
   top: 1.5rem;

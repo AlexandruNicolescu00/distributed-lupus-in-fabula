@@ -27,6 +27,9 @@ const POLL_INTERVAL = 4000
 
 const isLoading = computed(() => lobbyStore.isLoading)
 
+// ---- REGOLE ----
+const showRules = ref(false)
+
 const filteredLobbies = computed(() => {
   const query = lobbySearch.value.trim().toLowerCase()
   if (!query) return lobbies.value
@@ -309,6 +312,61 @@ function selectMode(selected) {
       </section>
     </main>
   </div>
+
+  <!-- Teleport al body per evitare overflow:hidden del parent -->
+  <Teleport to="body">
+    <button class="rules-btn" @click="showRules = true" title="Regole del gioco">📜</button>
+
+    <Transition name="modal">
+      <div v-if="showRules" class="rules-overlay" @click.self="showRules = false">
+        <div class="rules-modal">
+          <button class="rules-close" @click="showRules = false">✕</button>
+          <h2 class="rules-title">📜 Regole del Gioco</h2>
+
+          <div class="rules-body">
+            <section class="rules-section">
+              <h3>🎯 Obiettivo</h3>
+              <p><strong>Villagers:</strong> scoprono e eliminano tutti i lupi durante le votazioni diurne.</p>
+              <p><strong>Lupi:</strong> eliminano i villagers di notte finché sono in maggioranza.</p>
+            </section>
+
+            <section class="rules-section">
+              <h3>👥 Ruoli</h3>
+              <ul>
+                <li><strong>🐺 Lupo</strong> — ogni notte sceglie insieme agli altri lupi una vittima da eliminare.</li>
+                <li><strong>🔮 Veggente</strong> — ogni notte può scoprire il ruolo segreto di un giocatore.</li>
+                <li><strong>🌾 Contadino</strong> — non ha poteri speciali, ma vota di giorno per eliminare i sospetti.</li>
+              </ul>
+            </section>
+
+            <section class="rules-section">
+              <h3>🌙 Fasi di gioco</h3>
+              <ol>
+                <li><strong>Notte</strong> — i lupi votano una vittima; il veggente (se vivo) indaga un giocatore.</li>
+                <li><strong>Giorno</strong> — viene rivelata la vittima notturna; si discute.</li>
+                <li><strong>Votazione</strong> — tutti i vivi votano chi eliminare. Chi riceve più voti viene espulso.</li>
+              </ol>
+            </section>
+
+            <section class="rules-section">
+              <h3>⚡ Regole speciali</h3>
+              <ul>
+                <li>Se un giocatore si disconnette, la partita si mette in <strong>pausa per 20 secondi</strong>. Se non rientra viene eliminato.</li>
+                <li>In caso di <strong>parità</strong> nei voti di giorno, nessuno viene eliminato.</li>
+                <li>I lupi vedono l'identità dei propri compagni lupo.</li>
+              </ul>
+            </section>
+
+            <section class="rules-section">
+              <h3>🏆 Vittoria</h3>
+              <p>I <strong>villagers</strong> vincono quando tutti i lupi sono eliminati.</p>
+              <p>I <strong>lupi</strong> vincono quando uguagliano o superano il numero dei villagers in vita.</p>
+            </section>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -724,5 +782,143 @@ function selectMode(selected) {
 }
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* ---- PULSANTE REGOLE ---- */
+.rules-btn {
+  position: fixed;
+  top: 1.2rem;
+  right: 1.4rem;
+  z-index: 100;
+  background: rgba(8, 8, 18, 0.65);
+  border: 1px solid rgba(232, 200, 122, 0.3);
+  border-radius: 50%;
+  width: 48px;
+  height: 48px;
+  font-size: 1.4rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px);
+  transition: all 0.25s ease;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+}
+.rules-btn:hover {
+  border-color: rgba(232, 200, 122, 0.7);
+  background: rgba(232, 200, 122, 0.12);
+  transform: scale(1.08);
+}
+
+/* ---- MODAL REGOLE ---- */
+.rules-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.rules-modal {
+  position: relative;
+  background: rgba(10, 8, 22, 0.97);
+  border: 1px solid rgba(232, 200, 122, 0.25);
+  border-radius: 20px;
+  padding: 2rem 2rem 1.8rem;
+  max-width: 540px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 16px 60px rgba(0,0,0,0.7), 0 0 0 1px rgba(232,200,122,0.1) inset;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(232,200,122,0.3) transparent;
+}
+.rules-modal::-webkit-scrollbar { width: 6px; }
+.rules-modal::-webkit-scrollbar-thumb {
+  background: rgba(232,200,122,0.3);
+  border-radius: 3px;
+}
+
+.rules-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  background: none;
+  border: none;
+  color: rgba(232,224,213,0.6);
+  font-size: 1.1rem;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
+  border-radius: 6px;
+  transition: color 0.2s, background 0.2s;
+}
+.rules-close:hover {
+  color: #e8c87a;
+  background: rgba(232,200,122,0.1);
+}
+
+.rules-title {
+  font-family: 'Cinzel', serif;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #e8c87a;
+  letter-spacing: 0.06em;
+  margin-bottom: 1.4rem;
+  text-align: center;
+}
+
+.rules-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.rules-section h3 {
+  font-family: 'Cinzel', serif;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #e8c87a;
+  letter-spacing: 0.08em;
+  margin-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(232,200,122,0.15);
+  padding-bottom: 0.3rem;
+}
+
+.rules-section p,
+.rules-section li {
+  font-size: 0.95rem;
+  color: rgba(232,224,213,0.9);
+  line-height: 1.6;
+  margin-bottom: 0.3rem;
+}
+
+.rules-section ul,
+.rules-section ol {
+  padding-left: 1.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+/* ---- ANIMAZIONE MODAL ---- */
+.modal-enter-active, .modal-leave-active {
+  transition: opacity 0.25s ease;
+}
+.modal-enter-active .rules-modal,
+.modal-leave-active .rules-modal {
+  transition: transform 0.25s ease, opacity 0.25s ease;
+}
+.modal-enter-from, .modal-leave-to {
+  opacity: 0;
+}
+.modal-enter-from .rules-modal,
+.modal-leave-to .rules-modal {
+  transform: scale(0.93) translateY(12px);
+  opacity: 0;
 }
 </style>

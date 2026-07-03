@@ -567,6 +567,17 @@ async def advance_phase(
             await _end_game(r, game_id, winner, current_round, result)
             return result
 
+        # Reset pulito prima di ogni notte (belt-and-suspenders rispetto a resolve_night)
+        await rs.clear_wolf_votes(r, game_id)
+        await rs.clear_seer_action(r, game_id)
+        all_players_pre = await rs.get_all_players(r, game_id)
+        to_reset = [p for p in all_players_pre.values() if p.has_acted or p.has_voted]
+        for p in to_reset:
+            p.has_acted = False
+            p.has_voted = False
+        if to_reset:
+            await rs.set_players_bulk(r, game_id, to_reset)
+
         timer_end = await set_phase(r, game_id, Phase.NIGHT)
         result["next_phase"] = Phase.NIGHT
         result["timer_end"] = timer_end

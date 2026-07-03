@@ -180,6 +180,8 @@ class GameRuntime:
                 ),
             )
             self._schedule_phase_timer(room_id, result.get("timer_end"))
+        if next_phase == Phase.NIGHT:
+            await self._check_night_actions_complete(room_id)
 
         await self._sync_room_state(room_id)
 
@@ -207,7 +209,7 @@ class GameRuntime:
         players = await rs.get_all_players(redis, room_id)
         alive_count = sum(1 for p in players.values() if p.alive)
         votes = await rs.get_votes(redis, room_id)
-        
+
         if len(votes) == alive_count:
             # Salta il timer
             self._cancel_phase_timer(room_id)
@@ -251,17 +253,23 @@ class GameRuntime:
         """Helper to check if all wolves and seer have acted. If so, skips timer."""
         redis = self._get_redis()
         players = await rs.get_all_players(redis, room_id)
-        
+
         # Check wolves
         alive_wolves = [p for p in players.values() if p.alive and p.role and p.role.value == 'WOLF']
         wolf_votes = await rs.get_wolf_votes(redis, room_id)
-        wolves_done = len(wolf_votes) == len(alive_wolves)
-        
+        wolves_done = len(alive_wolves) == 0 or len(wolf_votes) >= len(alive_wolves)
+
         # Check seer
         alive_seer = next((p for p in players.values() if p.alive and p.role and p.role.value == 'SEER'), None)
         seer_action = await rs.get_seer_action(redis, room_id)
         seer_done = (alive_seer is None) or (seer_action is not None)
-        
+
+        logger.debug(
+            "night_check | room=%s wolves=%d votes=%d wolves_done=%s alive_seer=%s seer_done=%s",
+            room_id, len(alive_wolves), len(wolf_votes), wolves_done,
+            alive_seer.player_id if alive_seer else None, seer_done,
+        )
+
         if wolves_done and seer_done:
             self._cancel_phase_timer(room_id)
             await self.advance_phase_and_emit(room_id)
@@ -283,6 +291,22 @@ class GameRuntime:
         state = await rs.get_game_state(redis, room_id) or {}
         wolf_count = state.get("wolf_count")
         seer_count = state.get("seer_count")
+
+        # Pulizia stato residuo da partite precedenti nella stessa stanza
+        await rs.clear_wolf_votes(redis, room_id)
+        await rs.clear_seer_action(redis, room_id)
+
+        # Reset has_acted/has_voted per tutti i giocatori (potrebbero essere rimasti
+        # da una partita interrotta prima di _resolve_night)
+        all_players_pre = await rs.get_all_players(redis, room_id)
+        to_reset = []
+        for p in all_players_pre.values():
+            if p.has_acted or p.has_voted:
+                p.has_acted = False
+                p.has_voted = False
+                to_reset.append(p)
+        if to_reset:
+            await rs.set_players_bulk(redis, room_id, to_reset)
 
         assignment = await assign_roles(
             redis,
@@ -314,6 +338,7 @@ class GameRuntime:
             build_phase_changed_payload(Phase.NIGHT, 0, timer_end),
         )
         self._schedule_phase_timer(room_id, timer_end)
+        await self._check_night_actions_complete(room_id)
 
     async def handle_phase_advance(self, room_id: str) -> None:
         await self.advance_phase_and_emit(room_id)

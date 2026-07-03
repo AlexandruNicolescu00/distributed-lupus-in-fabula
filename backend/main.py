@@ -64,15 +64,13 @@ pubsub_manager     = PubSubManager(sio, connection_manager)
 state_store        = GameStateStore()
 phase_tasks: dict[str, asyncio.Task] = {}
 background_tasks: list[asyncio.Task] = []
+grace_tasks: dict[tuple[str, str], asyncio.Task] = {}  # (room_id, client_id) -> task
 game_runtime: GameRuntime | None = None
 lobby_runtime: LobbyRuntime | None = None
 
-# Intervalli dei loop di background (rif. teoria: dependability/recovery ed
-# eventual-consistency). Lo sweeper recupera i timer di fase scaduti se la replica
-# che li aveva schedulati muore; l'anti-entropy ribroadcasta lo snapshot per far
-# convergere i client che hanno perso eventi Pub/Sub.
-SWEEPER_INTERVAL = 2.0        # secondi
-ANTI_ENTROPY_INTERVAL = 10.0  # secondi
+SWEEPER_INTERVAL = 2.0
+ANTI_ENTROPY_INTERVAL = 10.0
+GRACE_SECONDS = 20
 
 
 def _domain_redis():
@@ -169,9 +167,12 @@ async def lifespan(app: FastAPI):
         task.cancel()
     for task in background_tasks:
         task.cancel()
-    await asyncio.gather(*phase_tasks.values(), *background_tasks, return_exceptions=True)
+    for task in grace_tasks.values():
+        task.cancel()
+    await asyncio.gather(*phase_tasks.values(), *background_tasks, *grace_tasks.values(), return_exceptions=True)
     phase_tasks.clear()
     background_tasks.clear()
+    grace_tasks.clear()
     await pubsub_manager.shutdown()
     await state_store.shutdown()
 
@@ -315,6 +316,39 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     if game_runtime:
         await game_runtime.emit_role_assignment_for_player(room_id, client_id, sid)
 
+    # Se c'era un grace task attivo per questo giocatore, lo cancelliamo: è rientrato
+    grace_key = (room_id, client_id)
+    grace_task = grace_tasks.pop(grace_key, None)
+    if grace_task is not None and not grace_task.done():
+        grace_task.cancel()
+        logger.info("Grace task cancellato: %s è rientrato | room=%s", client_id, room_id)
+
+        # Messaggio di rientro in chat (usa username dal player già caricato sopra)
+        reconnect_name = player.username if player else client_id
+        reconnect_msg = RedisEvent(
+            event_type=EventType.CHAT_MESSAGE,
+            room_id=room_id,
+            sender_id=INSTANCE_ID,
+            payload={
+                "senderId": "system",
+                "senderName": "Sistema",
+                "text": f"✅ {reconnect_name} è rientrato nel villaggio! Il gioco riprende.",
+                "channel": "global",
+            },
+        )
+        await sio.emit(EventType.CHAT_MESSAGE, WSMessage.from_redis_event(reconnect_msg).model_dump(), room=room_id)
+        await pubsub_manager.publish(reconnect_msg)
+
+        # Riprende il gioco
+        resume_event = RedisEvent(
+            event_type=EventType.GAME_RESUMED,
+            room_id=room_id,
+            sender_id=INSTANCE_ID,
+            payload={"reason": "player_reconnected", "client_id": client_id},
+        )
+        await sio.emit(EventType.GAME_RESUMED, WSMessage.from_redis_event(resume_event).model_dump(), room=room_id)
+        await pubsub_manager.publish(resume_event)
+
     # Notifica tutti gli altri client (locale + altre istanze via Redis)
     join_event = RedisEvent(
         event_type=EventType.PLAYER_JOINED,
@@ -358,26 +392,113 @@ async def disconnect(sid: str):
     player_name = leaving_player.username if leaving_player else (client_id or sid)
 
     if is_midgame and leaving_player and leaving_player.alive:
-        # 1. Uccidiamo il giocatore che fugge (evita stalli e permette check vittoria)
-        leaving_player.alive = False
-        from core import state_store as rs
-        await rs.set_player(_domain_redis(), room_id, leaving_player)
-        
-        # 2. Notifichiamo tutti in chat
-        sys_msg_event = RedisEvent(
+        # Avvia grace timer: il giocatore ha GRACE_SECONDS per rientrare
+        # prima di essere eliminato dalla partita.
+        grace_key = (room_id, client_id or sid)
+
+        async def _grace_expired(r_id: str, c_id: str, p_name: str) -> None:
+            await asyncio.sleep(GRACE_SECONDS)
+            grace_tasks.pop((r_id, c_id), None)
+
+            # Ricontrolla che sia ancora disconnesso (potrebbe essersi riconnesso
+            # su un'altra replica e il task non è stato cancellato in tempo)
+            from core import state_store as rs
+            still_disconnected = not connection_manager.get_sid(r_id, c_id)
+            player_now = await rs.get_player(_domain_redis(), r_id, c_id)
+            if not still_disconnected or (player_now and not player_now.alive):
+                return
+
+            logger.info("Grace scaduto: elimino %s | room=%s", c_id, r_id)
+
+            # Elimina il giocatore
+            if player_now:
+                player_now.alive = False
+                await rs.set_player(_domain_redis(), r_id, player_now)
+
+            # Messaggio di fuga definitiva
+            fled_msg = RedisEvent(
+                event_type=EventType.CHAT_MESSAGE,
+                room_id=r_id,
+                sender_id=INSTANCE_ID,
+                payload={
+                    "senderId": "system",
+                    "senderName": "Sistema",
+                    "text": f"💨 {p_name} è fuggito definitivamente dal villaggio!",
+                    "channel": "global",
+                },
+            )
+            await sio.emit(EventType.CHAT_MESSAGE, WSMessage.from_redis_event(fled_msg).model_dump(), room=r_id)
+            await pubsub_manager.publish(fled_msg)
+
+            # Riprende il gioco (era in pausa)
+            resume_event = RedisEvent(
+                event_type=EventType.GAME_RESUMED,
+                room_id=r_id,
+                sender_id=INSTANCE_ID,
+                payload={"reason": "grace_expired", "client_id": c_id},
+            )
+            await sio.emit(EventType.GAME_RESUMED, WSMessage.from_redis_event(resume_event).model_dump(), room=r_id)
+            await pubsub_manager.publish(resume_event)
+
+            # Controllo vittoria istantaneo
+            from services.game_logic import check_winner, _end_game
+            from models.events import PhaseChangedPayload, GameEndedPayload
+            r = _domain_redis()
+            winner = await check_winner(r, r_id)
+            if winner:
+                cs = await state_store.get_state(r_id)
+                result = {}
+                await _end_game(r, r_id, winner, (cs or {}).get("round", 0), result)
+
+                # GAME_ENDED con final_players aggiornati (alive=False per chi è uscito)
+                game_ended_payload = GameEndedPayload(
+                    winner=winner.value,
+                    reason="player_fled",
+                    round=result.get("round", 0),
+                    players=result.get("final_players", []),
+                )
+                ge_event = RedisEvent(event_type=EventType.GAME_ENDED, room_id=r_id, sender_id=INSTANCE_ID, payload=asdict(game_ended_payload))
+                await sio.emit(EventType.GAME_ENDED, WSMessage.from_redis_event(ge_event).model_dump(), room=r_id)
+                await pubsub_manager.publish(ge_event)
+
+                phase_payload = PhaseChangedPayload(phase=Phase.ENDED.value, round=result.get("round", 0), timer_end=None)
+                await _emit_authoritative_event(EventType.PHASE_CHANGED, r_id, phase_payload)
+                _cancel_phase_timer(r_id)
+            else:
+                # Se siamo in NIGHT e il giocatore eliminato era wolf/seer,
+                # potrebbe non essere rimasto nessuno da attendere → avanza subito.
+                cs = await state_store.get_state(r_id)
+                if cs and cs.get("phase") == Phase.NIGHT.value and game_runtime is not None:
+                    await game_runtime._check_night_actions_complete(r_id)
+
+        # Pausa il gioco e avvisa in chat
+        pause_event = RedisEvent(
+            event_type=EventType.GAME_PAUSED,
+            room_id=room_id,
+            sender_id=INSTANCE_ID,
+            payload={"reason": "player_disconnected", "client_id": client_id, "grace_seconds": GRACE_SECONDS},
+        )
+        await sio.emit(EventType.GAME_PAUSED, WSMessage.from_redis_event(pause_event).model_dump(), room=room_id)
+        await pubsub_manager.publish(pause_event)
+
+        disc_msg = RedisEvent(
             event_type=EventType.CHAT_MESSAGE,
             room_id=room_id,
             sender_id=INSTANCE_ID,
             payload={
                 "senderId": "system",
                 "senderName": "Sistema",
-                "text": f"💨 {player_name} è fuggito dal villaggio nel bel mezzo della partita!",
+                "text": f"⚠️ {player_name} si è disconnesso. Ha {GRACE_SECONDS} secondi per rientrare...",
                 "channel": "global",
             },
         )
-        await sio.emit(EventType.CHAT_MESSAGE, WSMessage.from_redis_event(sys_msg_event).model_dump(), room=room_id)
-        await pubsub_manager.publish(sys_msg_event)
+        await sio.emit(EventType.CHAT_MESSAGE, WSMessage.from_redis_event(disc_msg).model_dump(), room=room_id)
+        await pubsub_manager.publish(disc_msg)
 
+        grace_tasks[grace_key] = asyncio.create_task(
+            _grace_expired(room_id, client_id or sid, player_name),
+            name=f"grace:{room_id}:{client_id}",
+        )
 
     # ── STANDARD DISCONNECT LOGIC (CON ELEZIONE HOST) ──
     await mark_player_disconnected(_domain_redis(), room_id, client_id or sid)
@@ -387,7 +508,11 @@ async def disconnect(sid: str):
     else:
         remaining_raw = await state_store.set_player_disconnected(room_id, client_id or sid)
         
-    await promote_host_if_needed(_domain_redis(), room_id, remaining_raw)
+    # Non promuoviamo un nuovo host se c'è un grace timer attivo: il giocatore
+    # potrebbe rientrare e ritrovare l'host al suo posto.
+    grace_active = (room_id, client_id or sid) in grace_tasks
+    if not grace_active:
+        await promote_host_if_needed(_domain_redis(), room_id, remaining_raw)
     
     # Generiamo snapshot e ordiniamo per il LEAVE
     current_state = await sync_lobby_room_state(_domain_redis(), state_store, room_id)
@@ -707,6 +832,19 @@ async def catch_all(event: str, sid: str, data: dict):
             # 1.5. Ripulisci i fantasmi disconnessi DA ENTRAMBI I DATABASE!
             await rs.clean_disconnected_players(r, room_id) # Elimina dal DB profondo (Game Logic)
             await state_store.clean_disconnected_players(room_id) # Elimina dalla cache Socket.IO
+
+            # Cross-check con le socket reali: rimuove chiunque sia nel DB
+            # ma non abbia più una socket attiva — ghost da partite normali
+            # dove un giocatore ha chiuso il browser senza che il disconnect
+            # aggiornasse correttamente il flag connected nel domain Redis.
+            actually_connected = set(connection_manager.get_client_ids(room_id))
+            all_players_db = await rs.get_all_players(r, room_id)
+            ghost_ids = [pid for pid in all_players_db if pid not in actually_connected]
+            if ghost_ids:
+                await r.hdel(rs.key_players(room_id), *ghost_ids)
+                for gid in ghost_ids:
+                    await state_store.remove_player(room_id, gid)
+                logger.info("Rimossi ghost players al riavvio | room=%s ghosts=%s", room_id, ghost_ids)
             
             # 2. Resuscita i giocatori e pulisci i loro ruoli/voti/stato pronti
             all_players = await rs.get_all_players(r, room_id)

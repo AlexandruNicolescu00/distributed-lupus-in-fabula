@@ -58,7 +58,7 @@ onMounted(() => {
     ]
   }
 
-  // 🔒 CONGELIAMO il risultato adesso, prima di qualunque reset dello store
+  // CONGELIAMO il risultato adesso, prima di qualunque reset dello store
   wolvesWon.value    = game.winner === WINNERS.WOLVES
   finalPlayers.value = [...game.players]
   finalRound.value   = game.round
@@ -148,8 +148,6 @@ const roleName = {
     <div class="results-wrap">
 
       <section class="moment-announce">
-
-        <div class="announce-icon">{{ wolvesWon ? '🐺' : '🌅' }}</div>
 
         <div class="announce-label">
           {{ wolvesWon ? 'I Lupi hanno vinto!' : 'Il Villaggio ha vinto!' }}
