@@ -297,17 +297,21 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     )
     current_state["players"] = unified_players
     
+    player = await get_player(_domain_redis(), room_id, client_id)
+    personal_state = dict(current_state or {})
+    if player and player.role:
+        personal_state["myRole"] = player.role.value
+
     # Invia state sync al solo client che si (ri)connette
     sync_event = RedisEvent(
         event_type=EventType.GAME_STATE_SYNC,
         room_id=room_id,
         sender_id=INSTANCE_ID,
-        payload={"state": current_state or {}, "players": unified_players},
+        payload={"state": personal_state, "players": unified_players},
     )
     ws_msg = WSMessage.from_redis_event(sync_event)
     await sio.emit(EventType.GAME_STATE_SYNC, ws_msg.model_dump(), to=sid)
 
-    player = await get_player(_domain_redis(), room_id, client_id)
     if game_runtime:
         await game_runtime.emit_role_assignment_for_player(room_id, client_id, sid)
 
