@@ -228,9 +228,7 @@ function leaveGame() {
       <div v-if="showNightOverlay" class="night-overlay" :style="nightBgStyle">
         
         <div v-if="!game.myRole" class="night-content role-unknown">
-          <div class="night-moon">🎭</div>
-          <div class="night-title">Assegnazione Ruoli...</div>
-          <div class="night-sub">Chiudi gli occhi. Il tuo destino sta per essere deciso.</div>
+          <div class="loader"></div>
         </div>
 
         <div v-else-if="ownPlayerCard && !ownPlayerCard.alive" class="night-content">
