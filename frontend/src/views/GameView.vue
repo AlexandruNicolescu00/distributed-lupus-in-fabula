@@ -25,6 +25,7 @@ const { connect, disconnect, emit, isConnected } = useSocket()
 const showRoleBanner = ref(false)
 const myVote = ref(null)
 const nightActionDone = ref(false)
+const reconnectToast = ref(null)
 const lobbyCode = route.params.id || lobby.lobbyCode
 
 const isCurrentUserHost = computed(() =>
@@ -72,6 +73,18 @@ onMounted(async () => {
   setTimeout(() => {
     showRoleBanner.value = false
   }, 4000)
+
+  const { on: socketOn } = useSocket()
+  socketOn('game_resumed', (message) => {
+    const raw = message?.payload ?? message
+    const payload = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (payload?.reason === 'player_reconnected' && payload?.client_id) {
+      const p = game.players.find(pl => pl.player_id === payload.client_id)
+      const name = p?.username ?? payload.client_id
+      reconnectToast.value = `✅ ${name} è rientrato nel villaggio!`
+      setTimeout(() => { reconnectToast.value = null }, 5000)
+    }
+  })
 })
 
 onUnmounted(() => {
@@ -222,6 +235,10 @@ function leaveGame() {
         <p>Connessione al server interrotta...</p>
         <span>Ripristino sessione via Redis in corso</span>
       </div>
+    </Transition>
+
+    <Transition name="toast-slide">
+      <div v-if="reconnectToast" class="reconnect-toast">{{ reconnectToast }}</div>
     </Transition>
 
     <Transition name="night">
@@ -538,4 +555,24 @@ function leaveGame() {
 @media (max-width: 800px) {
   .wolf-dashboard { grid-template-columns: 1fr; }
 }
+.reconnect-toast {
+  position: fixed;
+  top: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  color: #86efac;
+  padding: 0.75rem 1.5rem;
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 4px 20px rgba(34, 197, 94, 0.2);
+}
+.toast-slide-enter-active, .toast-slide-leave-active { transition: all 0.4s ease; }
+.toast-slide-enter-from, .toast-slide-leave-to { opacity: 0; transform: translateX(-50%) translateY(-20px); }
 </style>

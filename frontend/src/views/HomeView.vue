@@ -231,7 +231,7 @@ function selectMode(selected) {
 
         <button class="btn-primary" @click="createLobby" :disabled="isLoading">
           <span v-if="isLoading" class="spinner"></span>
-          <span v-else>🐺 Crea la Lobby</span>
+          <span v-else> Crea la Lobby</span>
         </button>
       </section>
 
@@ -272,7 +272,7 @@ function selectMode(selected) {
             v-model="lobbySearch"
             class="field-input"
             type="text"
-            placeholder="🔍 Cerca per codice o host…"
+            placeholder=" Cerca per codice o host…"
           />
 
           <div class="lobby-list" :class="{ 'lobby-list--error': codeError }">
@@ -281,7 +281,7 @@ function selectMode(selected) {
               Caricamento lobby…
             </p>
             <p v-else-if="filteredLobbies.length === 0" class="lobby-empty">
-              {{ lobbies.length === 0 ? 'Nessuna lobby aperta al momento' : 'Nessun risultato per la ricerca' }}
+              {{ lobbies.length === 0 ? 'Nessuna partita disponibile al momento' : 'Nessun risultato per la ricerca' }}
             </p>
 
             <button
@@ -289,7 +289,10 @@ function selectMode(selected) {
               :key="lobby.code"
               type="button"
               class="lobby-item"
-              :class="{ 'lobby-item--active': lobby.code === lobbyCode }"
+              :class="{
+                'lobby-item--active': lobby.code === lobbyCode,
+                'lobby-item--ingame': lobby.status === 'in_game',
+              }"
               @click="selectLobby(lobby.code)"
               @dblclick="joinLobby"
             >
@@ -297,6 +300,7 @@ function selectMode(selected) {
               <span class="lobby-item-meta">
                 <span class="lobby-item-host">👑 {{ lobby.host }}</span>
                 <span class="lobby-item-count">👥 {{ lobby.player_count }}</span>
+                <span v-if="lobby.status === 'in_game'" class="lobby-item-badge">In corso</span>
               </span>
             </button>
           </div>
@@ -307,66 +311,64 @@ function selectMode(selected) {
 
         <button class="btn-primary" @click="joinLobby" :disabled="isLoading || !lobbyCode">
           <span v-if="isLoading" class="spinner"></span>
-          <span v-else>🚪 Entra nella Lobby</span>
+          <span v-else> Entra nella Lobby</span>
         </button>
       </section>
     </main>
   </div>
 
-  <!-- Teleport al body per evitare overflow:hidden del parent -->
-  <Teleport to="body">
-    <button class="rules-btn" @click="showRules = true" title="Regole del gioco">📜</button>
+  <!-- Bottone regole fisso in alto a destra (position:fixed non viene clippato da overflow:hidden) -->
+  <button class="rules-btn" @click="showRules = true" title="Regole del gioco">📜</button>
 
-    <Transition name="modal">
-      <div v-if="showRules" class="rules-overlay" @click.self="showRules = false">
-        <div class="rules-modal">
-          <button class="rules-close" @click="showRules = false">✕</button>
-          <h2 class="rules-title">📜 Regole del Gioco</h2>
+  <Transition name="modal">
+    <div v-if="showRules" class="rules-overlay" @click.self="showRules = false">
+      <div class="rules-modal">
+        <button class="rules-close" @click="showRules = false">✕</button>
+        <h2 class="rules-title">📜 Regole del Gioco</h2>
 
-          <div class="rules-body">
-            <section class="rules-section">
-              <h3>🎯 Obiettivo</h3>
-              <p><strong>Villagers:</strong> scoprono e eliminano tutti i lupi durante le votazioni diurne.</p>
-              <p><strong>Lupi:</strong> eliminano i villagers di notte finché sono in maggioranza.</p>
-            </section>
+        <div class="rules-body">
+          <section class="rules-section">
+            <h3>🎯 Obiettivo</h3>
+            <p><strong>Villagers:</strong> scoprono e eliminano tutti i lupi durante le votazioni diurne.</p>
+            <p><strong>Lupi:</strong> eliminano i villagers di notte finché sono in maggioranza.</p>
+          </section>
 
-            <section class="rules-section">
-              <h3>👥 Ruoli</h3>
-              <ul>
-                <li><strong>🐺 Lupo</strong> — ogni notte sceglie insieme agli altri lupi una vittima da eliminare.</li>
-                <li><strong>🔮 Veggente</strong> — ogni notte può scoprire il ruolo segreto di un giocatore.</li>
-                <li><strong>🌾 Contadino</strong> — non ha poteri speciali, ma vota di giorno per eliminare i sospetti.</li>
-              </ul>
-            </section>
+          <section class="rules-section">
+            <h3>👥 Ruoli</h3>
+            <ul>
+              <li><strong>🐺 Lupo</strong> — ogni notte sceglie insieme agli altri lupi una vittima da eliminare.</li>
+              <li><strong>🔮 Veggente</strong> — ogni notte può scoprire il ruolo segreto di un giocatore.</li>
+              <li><strong>🌾 Contadino</strong> — non ha poteri speciali, ma vota di giorno per eliminare i sospetti.</li>
+            </ul>
+          </section>
 
-            <section class="rules-section">
-              <h3>🌙 Fasi di gioco</h3>
-              <ol>
-                <li><strong>Notte</strong> — i lupi votano una vittima; il veggente (se vivo) indaga un giocatore.</li>
-                <li><strong>Giorno</strong> — viene rivelata la vittima notturna; si discute.</li>
-                <li><strong>Votazione</strong> — tutti i vivi votano chi eliminare. Chi riceve più voti viene espulso.</li>
-              </ol>
-            </section>
+          <section class="rules-section">
+            <h3>🌙 Fasi di gioco</h3>
+            <ol>
+              <li><strong>Notte</strong> — i lupi votano una vittima; il veggente (se vivo) indaga un giocatore.</li>
+              <li><strong>Giorno</strong> — viene rivelata la vittima notturna; si discute.</li>
+              <li><strong>Votazione</strong> — tutti i vivi votano chi eliminare. Chi riceve più voti viene espulso.</li>
+            </ol>
+          </section>
 
-            <section class="rules-section">
-              <h3>⚡ Regole speciali</h3>
-              <ul>
-                <li>Se un giocatore si disconnette, la partita si mette in <strong>pausa per 20 secondi</strong>. Se non rientra viene eliminato.</li>
-                <li>In caso di <strong>parità</strong> nei voti di giorno, nessuno viene eliminato.</li>
-                <li>I lupi vedono l'identità dei propri compagni lupo.</li>
-              </ul>
-            </section>
+          <section class="rules-section">
+            <h3>⚡ Regole speciali</h3>
+            <ul>
+              <li>Se un giocatore si disconnette, la partita si mette in <strong>pausa per 20 secondi</strong>. Se non rientra viene eliminato.</li>
+              <li>In caso di <strong>parità</strong> nei voti di giorno, nessuno viene eliminato.</li>
+              <li>I lupi vedono l'identità dei propri compagni lupo.</li>
+            </ul>
+          </section>
 
-            <section class="rules-section">
-              <h3>🏆 Vittoria</h3>
-              <p>I <strong>villagers</strong> vincono quando tutti i lupi sono eliminati.</p>
-              <p>I <strong>lupi</strong> vincono quando uguagliano o superano il numero dei villagers in vita.</p>
-            </section>
-          </div>
+          <section class="rules-section">
+            <h3>🏆 Vittoria</h3>
+            <p>I <strong>villagers</strong> vincono quando tutti i lupi sono eliminati.</p>
+            <p>I <strong>lupi</strong> vincono quando uguagliano o superano il numero dei villagers in vita.</p>
+          </section>
         </div>
       </div>
-    </Transition>
-  </Teleport>
+    </div>
+  </Transition>
 </template>
 
 <style scoped>
@@ -703,6 +705,24 @@ function selectMode(selected) {
   background: rgba(232,200,122,0.14);
   box-shadow: 0 0 0 1px rgba(232,200,122,0.4) inset;
 }
+.lobby-item--ingame {
+  border-color: rgba(129,140,248,0.2);
+  opacity: 0.85;
+}
+.lobby-item--ingame:hover {
+  border-color: rgba(129,140,248,0.45);
+  background: rgba(129,140,248,0.08);
+}
+.lobby-item-badge {
+  font-size: 0.7rem;
+  font-family: 'Cinzel', serif;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 6px;
+  background: rgba(129,140,248,0.15);
+  border: 1px solid rgba(129,140,248,0.35);
+  color: #818cf8;
+}
 
 .lobby-item-code {
   font-family: 'Cinzel', serif;
@@ -920,5 +940,43 @@ function selectMode(selected) {
 .modal-leave-to .rules-modal {
   transform: scale(0.93) translateY(12px);
   opacity: 0;
+}
+</style>
+
+<!-- Stili globali per gli elementi teleportati (Teleport to="body" non eredita gli scoped CSS) -->
+<style>
+.rules-btn {
+  position: fixed;
+  top: 1.2rem;
+  right: 1.4rem;
+  z-index: 100;
+  background: rgba(8, 8, 18, 0.65);
+  border: 1px solid rgba(232, 200, 122, 0.3);
+  border-radius: 50%;
+  width: 48px;
+  height: 48px;
+  font-size: 1.4rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(6px);
+  transition: all 0.25s ease;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+}
+.rules-btn:hover {
+  border-color: rgba(232, 200, 122, 0.7);
+  background: rgba(232, 200, 122, 0.12);
+  transform: scale(1.08);
+}
+.rules-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  backdrop-filter: blur(4px);
 }
 </style>

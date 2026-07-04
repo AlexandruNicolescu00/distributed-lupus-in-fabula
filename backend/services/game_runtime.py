@@ -193,8 +193,11 @@ class GameRuntime:
         if not await rs.acquire_advance_lock(self._get_redis(), room_id, INSTANCE_ID):
             logger.debug("advance_phase saltato (lock non acquisito) | room=%s", room_id)
             return
-        result = await advance_phase(self._get_redis(), room_id)
-        await self._emit_phase_outcome(room_id, result)
+        try:
+            result = await advance_phase(self._get_redis(), room_id)
+            await self._emit_phase_outcome(room_id, result)
+        finally:
+            await rs.release_advance_lock(self._get_redis(), room_id, INSTANCE_ID)
 
     async def handle_cast_vote(self, room_id: str, client_id: str, payload: dict[str, Any]) -> None:
         target_id = payload.get("target_id")

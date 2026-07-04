@@ -19,6 +19,8 @@ import { useRouter } from 'vue-router'
 import { useGameStore, ROLES, WINNERS, PHASES } from '@/stores/gameStore'
 import { useLobbyStore } from '@/stores/lobbyStore'
 import { useSocket } from '@/composables/useSocket'
+import wolfResultImg    from '@/assets/wolf_result1.png'
+import farmerResultImg  from '@/assets/farmer_result1.png'
 
 const router = useRouter()
 const game   = useGameStore()
@@ -105,6 +107,24 @@ function palette(role) {
 }
 
 // ---------------------------------------------------------------------------
+// BACKGROUND DINAMICO — usa import esplicito per evitare problemi Vite con
+// CSS url() su background multipli in produzione
+// ---------------------------------------------------------------------------
+const bgStyle = computed(() => {
+  const img = wolvesWon.value ? wolfResultImg : farmerResultImg
+  const overlay = wolvesWon.value
+    ? 'linear-gradient(rgba(7,1,10,0.35), rgba(7,1,10,0.55)), radial-gradient(ellipse at 50% 0%, rgba(139,0,0,0.35) 0%, rgba(7,1,10,0) 55%)'
+    : 'linear-gradient(rgba(1,10,7,0.32), rgba(1,10,7,0.52)), radial-gradient(ellipse at 50% 0%, rgba(22,101,52,0.30) 0%, rgba(1,10,7,0) 55%)'
+  return {
+    backgroundImage: `${overlay}, url(${img})`,
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+    backgroundRepeat: 'no-repeat',
+    backgroundAttachment: 'fixed',
+  }
+})
+
+// ---------------------------------------------------------------------------
 // AZIONI FINALI
 // ---------------------------------------------------------------------------
 function playAgain() {
@@ -139,7 +159,7 @@ const roleName = {
 </script>
 
 <template>
-  <div class="results-root" :class="wolvesWon ? 'theme--wolves' : 'theme--village'">
+  <div class="results-root" :class="wolvesWon ? 'theme--wolves' : 'theme--village'" :style="bgStyle">
 
     <div class="particles">
       <span v-for="n in 25" :key="n" class="particle" :style="{ '--i': n }"></span>
@@ -310,26 +330,10 @@ const roleName = {
   overflow-x: hidden;
   transition: background 2s ease;
 }
-.theme--wolves {
-  background:
-    linear-gradient(rgba(7,1,10,0.35), rgba(7,1,10,0.55)),
-    radial-gradient(ellipse at 50% 0%, rgba(139,0,0,0.35) 0%, rgba(7,1,10,0) 55%),
-    url('../assets/wolf_result1.png');
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
-}
-.theme--village {
-  background:
-    linear-gradient(rgba(1,10,7,0.32), rgba(1,10,7,0.52)),
-    radial-gradient(ellipse at 50% 0%, rgba(22,101,52,0.30) 0%, rgba(1,10,7,0) 55%),
-    url('../assets/farmer_result1.png');
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-attachment: fixed;
-}
+/* i background sono gestiti via :style="bgStyle" per garantire la risoluzione
+   corretta degli asset da Vite in produzione */
+.theme--wolves {}
+.theme--village {}
 /* ---- PARTICELLE STELLATE ---- */
 .particles { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
 .particle {

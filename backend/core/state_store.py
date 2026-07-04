@@ -177,16 +177,23 @@ async def get_active_rooms(r: aioredis.Redis) -> list[str]:
 async def acquire_advance_lock(
     r: aioredis.Redis, game_id: str, owner: str, ttl: int = 10
 ) -> bool:
-    """Lock NX a TTL breve che serializza l'avanzamento di fase tra i vari trigger
-    (timer di fase, evento manuale `phase:advance`, sweeper di recupero) e tra
-    repliche diverse. Solo il primo a prenderlo avanza; gli altri sono no-op.
-
-    Niente release esplicito: il TTL (10s) è molto inferiore alla durata di una
-    fase (45–120s), quindi l'auto-scadenza basta e si evita di rilasciare per
-    sbaglio un lock altrui. (Rif. teoria: state-machine-replication — una sola
-    esecuzione concordata dell'operazione.)
+    """Lock NX che serializza l'avanzamento di fase tra trigger concorrenti e repliche.
+    Rilasciare esplicitamente dopo l'uso via release_advance_lock.
+    Il TTL (10s) è un fallback di sicurezza in caso di crash.
     """
     return bool(await r.set(key_advance_lock(game_id), owner, nx=True, ex=ttl))
+
+
+async def release_advance_lock(r: aioredis.Redis, game_id: str, owner: str) -> None:
+    """Rilascia il lock solo se siamo ancora i proprietari (script Lua atomico)."""
+    _LUA_RELEASE = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+else
+    return 0
+end
+"""
+    await r.eval(_LUA_RELEASE, 1, key_advance_lock(game_id), owner)
 
 
 def _player_to_json(player: Player) -> str:
@@ -404,19 +411,27 @@ class GameStateStore:
             except json.JSONDecodeError:
                 continue
 
-            # Solo stanze in attesa: partite in corso o terminate non sono joinabili.
-            if snapshot.get("phase", Phase.LOBBY.value) != Phase.LOBBY.value:
+            phase = snapshot.get("phase", Phase.LOBBY.value)
+
+            # Le stanze terminate non sono mai visibili
+            if phase == Phase.ENDED.value:
                 continue
 
-            connected = [p for p in snapshot.get("players", []) if p.get("connected", True)]
-            if not connected:
+            all_players = snapshot.get("players", [])
+            if not all_players:
                 continue
 
-            host = next((p for p in connected if p.get("is_host")), connected[0])
+            # Priorità ai giocatori connessi per host e conteggio, ma la stanza
+            # rimane visibile anche se tutti sono temporaneamente disconnessi (grace period).
+            connected = [p for p in all_players if p.get("connected", True)]
+            display_players = connected if connected else all_players
+            host = next((p for p in display_players if p.get("is_host")), display_players[0])
             rooms.append({
                 "code": full_key[len(prefix):],
                 "host": host.get("username") or host.get("player_id"),
                 "player_count": len(connected),
+                # "lobby" = in attesa, "in_game" = partita in corso (solo rientro)
+                "status": "lobby" if phase == Phase.LOBBY.value else "in_game",
             })
 
         rooms.sort(key=lambda room: room["code"])

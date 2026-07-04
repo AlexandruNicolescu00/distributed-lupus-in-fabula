@@ -252,6 +252,7 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
 
     # ──  CONTROLLI DI SICUREZZA ───────────────────────────────────────────
     
+    phase = None
     current_state = await state_store.get_state(room_id)
     if current_state:
         phase = current_state.get("phase")
@@ -285,6 +286,16 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     connection_manager.connect(sid, room_id, client_id)
     await pubsub_manager.subscribe_room(room_id)
 
+    # Leggi il flag connected PRIMA di ensure_domain_player per rilevare una riconnessione
+    # su qualsiasi replica (il grace task potrebbe essere su un'altra istanza).
+    _player_before = await get_player(_domain_redis(), room_id, client_id)
+    _was_disconnected = (
+        _player_before is not None
+        and not _player_before.connected
+        and phase is not None
+        and phase != Phase.LOBBY.value
+    )
+
     await ensure_domain_player(_domain_redis(), room_id, client_id)
     await state_store.add_player(room_id, client_id) # Aggiorna la cache preliminare
     
@@ -296,8 +307,24 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
         current_state.get("players", []),
         key=lambda p: (not p.get("is_host", False), str(p.get("username", "")).lower())
     )
+
+    # Guardia anti-race: se Redis non ha ancora propagato il player (race condition
+    # tra replica 1 e replica 2), aggiunge il giocatore manualmente alla lista locale
+    # per evitare che il client riceva una game_state_sync senza la propria card.
+    if not any(p.get("player_id") == client_id for p in unified_players):
+        host_id = current_state.get("host_id")
+        unified_players.insert(0, {
+            "player_id": client_id,
+            "username": client_id,
+            "alive": True,
+            "connected": True,
+            "role": None,
+            "is_host": (host_id == client_id) or len(unified_players) == 0,
+            "ready": (host_id == client_id) or len(unified_players) == 0,
+        })
+
     current_state["players"] = unified_players
-    
+
     player = await get_player(_domain_redis(), room_id, client_id)
     personal_state = dict(current_state or {})
     if player and player.role:
@@ -316,14 +343,17 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
     if game_runtime:
         await game_runtime.emit_role_assignment_for_player(room_id, client_id, sid)
 
-    # Se c'era un grace task attivo per questo giocatore, lo cancelliamo: è rientrato
+    # Cancella il grace task locale se presente (replica corrente)
     grace_key = (room_id, client_id)
     grace_task = grace_tasks.pop(grace_key, None)
     if grace_task is not None and not grace_task.done():
         grace_task.cancel()
         logger.info("Grace task cancellato: %s è rientrato | room=%s", client_id, room_id)
 
-        # Messaggio di rientro in chat (usa username dal player già caricato sopra)
+    # Emetti messaggio di rientro e GAME_RESUMED se il giocatore era marcato disconnesso
+    # in Redis — gestisce sia la replica corrente che il caso cross-replica dove il
+    # grace task è su un'altra istanza e non può essere cancellato localmente.
+    if _was_disconnected:
         reconnect_name = player.username if player else client_id
         reconnect_msg = RedisEvent(
             event_type=EventType.CHAT_MESSAGE,
@@ -339,7 +369,6 @@ async def connect(sid: str, environ: dict, auth: dict | None = None):
         await sio.emit(EventType.CHAT_MESSAGE, WSMessage.from_redis_event(reconnect_msg).model_dump(), room=room_id)
         await pubsub_manager.publish(reconnect_msg)
 
-        # Riprende il gioco
         resume_event = RedisEvent(
             event_type=EventType.GAME_RESUMED,
             room_id=room_id,
@@ -400,12 +429,14 @@ async def disconnect(sid: str):
             await asyncio.sleep(GRACE_SECONDS)
             grace_tasks.pop((r_id, c_id), None)
 
-            # Ricontrolla che sia ancora disconnesso (potrebbe essersi riconnesso
-            # su un'altra replica e il task non è stato cancellato in tempo)
+            # Ricontrolla via Redis: se il giocatore è riconnesso su un'altra replica
+            # il flag `connected` sarà True e non va eliminato.
             from core import state_store as rs
-            still_disconnected = not connection_manager.get_sid(r_id, c_id)
             player_now = await rs.get_player(_domain_redis(), r_id, c_id)
-            if not still_disconnected or (player_now and not player_now.alive):
+            if player_now is None or not player_now.alive:
+                return
+            if player_now.connected:
+                logger.info("Grace scaduto ma %s è rientrato su altra replica, skip | room=%s", c_id, r_id)
                 return
 
             logger.info("Grace scaduto: elimino %s | room=%s", c_id, r_id)
@@ -833,18 +864,11 @@ async def catch_all(event: str, sid: str, data: dict):
             await rs.clean_disconnected_players(r, room_id) # Elimina dal DB profondo (Game Logic)
             await state_store.clean_disconnected_players(room_id) # Elimina dalla cache Socket.IO
 
-            # Cross-check con le socket reali: rimuove chiunque sia nel DB
-            # ma non abbia più una socket attiva — ghost da partite normali
-            # dove un giocatore ha chiuso il browser senza che il disconnect
-            # aggiornasse correttamente il flag connected nel domain Redis.
-            actually_connected = set(connection_manager.get_client_ids(room_id))
-            all_players_db = await rs.get_all_players(r, room_id)
-            ghost_ids = [pid for pid in all_players_db if pid not in actually_connected]
-            if ghost_ids:
-                await r.hdel(rs.key_players(room_id), *ghost_ids)
-                for gid in ghost_ids:
-                    await state_store.remove_player(room_id, gid)
-                logger.info("Rimossi ghost players al riavvio | room=%s ghosts=%s", room_id, ghost_ids)
+            # NOTA: il cross-check con connection_manager.get_client_ids() è stato
+            # rimosso perché con più repliche i giocatori connessi all'altra replica
+            # risultano "ghost" localmente e venivano cancellati erroneamente.
+            # rs.clean_disconnected_players() sopra usa il flag `connected` in Redis
+            # che è corretto cross-replica e basta per rimuovere i ghost reali.
             
             # 2. Resuscita i giocatori e pulisci i loro ruoli/voti/stato pronti
             all_players = await rs.get_all_players(r, room_id)
