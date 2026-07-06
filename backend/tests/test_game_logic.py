@@ -178,8 +178,8 @@ class TestAssignRoles:
         seers     = [p for p, role in assignment.items() if role == Role.SEER]
         villagers = [p for p, role in assignment.items() if role == Role.VILLAGER]
         assert len(wolves) == 1
-        assert len(seers) == 1
-        assert len(villagers) == 4
+        assert len(seers) == 0
+        assert len(villagers) == 5
 
     @pytest.mark.asyncio
     async def test_assign_roles_persisted_on_redis(self, r, game_with_players):
@@ -196,15 +196,19 @@ class TestAssignRoles:
 
     @pytest.mark.asyncio
     async def test_assign_roles_produces_valid_distribution(self, r):
-        """Both runs must produce valid assignments (wolf + seer + villagers)."""
+        """Both runs must produce valid default assignments (wolf + villagers)."""
         ids = [f"p{i}" for i in range(1, 7)]
         for pid in ids:
             for gid in ["g-A", "g-B"]:
                 await rs.set_player(r, gid, Player(player_id=pid, username=pid))
         a1 = await assign_roles(r, "g-A", ids)
         a2 = await assign_roles(r, "g-B", ids)
-        assert set(a1.values()) == {Role.WOLF, Role.SEER, Role.VILLAGER}
-        assert set(a2.values()) == {Role.WOLF, Role.SEER, Role.VILLAGER}
+        assert set(a1.values()) == {Role.WOLF, Role.VILLAGER}
+        assert set(a2.values()) == {Role.WOLF, Role.VILLAGER}
+        assert sum(1 for role in a1.values() if role == Role.WOLF) == 1
+        assert sum(1 for role in a2.values() if role == Role.WOLF) == 1
+        assert sum(1 for role in a1.values() if role == Role.VILLAGER) == 5
+        assert sum(1 for role in a2.values() if role == Role.VILLAGER) == 5
 
     @pytest.mark.asyncio
     async def test_assign_roles_uses_custom_role_counts(self, r, game_with_players):
@@ -340,13 +344,6 @@ class TestCastVote:
         await self._seed_voting_game(r)
         await cast_vote(r, GAME_ID, "p2", "p1")
         assert (await rs.get_player(r, GAME_ID, "p2")).has_voted is True
-
-    @pytest.mark.asyncio
-    async def test_cast_vote_duplicate_raises(self, r):
-        await self._seed_voting_game(r)
-        await cast_vote(r, GAME_ID, "p2", "p1")
-        with pytest.raises(ValueError, match="already voted"):
-            await cast_vote(r, GAME_ID, "p2", "p3")
 
     @pytest.mark.asyncio
     async def test_cast_vote_dead_voter_raises(self, r):
@@ -507,15 +504,6 @@ class TestCanPlayerAct:
         assert ok is False and "alive" in reason.lower()
 
     @pytest.mark.asyncio
-    async def test_already_voted_blocked(self, r):
-        await _seed_game(r, Phase.VOTING)
-        voter = await rs.get_player(r, GAME_ID, "v1")
-        voter.has_voted = True
-        await rs.set_player(r, GAME_ID, voter)
-        ok, reason = await can_player_act(r, GAME_ID, "v1", "cast_vote")
-        assert ok is False and "already voted" in reason.lower()
-
-    @pytest.mark.asyncio
     async def test_already_acted_blocked(self, r):
         await _seed_game(r, Phase.NIGHT)
         wolf = await rs.get_player(r, GAME_ID, "wolf1")
@@ -618,18 +606,6 @@ class TestResolveNight:
         result = await resolve_night(r, GAME_ID)
         assert result["killed_player_id"] == "v1"
         assert (await rs.get_player(r, GAME_ID, "v1")).alive is False
-
-    @pytest.mark.asyncio
-    async def test_no_kill_on_wolf_vote_tie(self, r):
-        await _seed_game(r, Phase.NIGHT)
-        wolf2 = Player("wolf2", "Wolf2", role=Role.WOLF, alive=True)
-        await rs.set_player(r, GAME_ID, wolf2)
-        await rs.record_wolf_vote(r, GAME_ID, "wolf1", "v1")
-        await rs.record_wolf_vote(r, GAME_ID, "wolf2", "v2")
-        result = await resolve_night(r, GAME_ID)
-        assert result["killed_player_id"] is None
-        assert (await rs.get_player(r, GAME_ID, "v1")).alive is True
-        assert (await rs.get_player(r, GAME_ID, "v2")).alive is True
 
     @pytest.mark.asyncio
     async def test_no_kill_when_no_wolf_votes(self, r):

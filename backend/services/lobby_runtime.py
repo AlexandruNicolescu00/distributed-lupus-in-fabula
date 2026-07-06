@@ -91,7 +91,7 @@ class LobbyRuntime:
         if host_id != client_id:
             raise ValueError("Only the host can start the game")
 
-        #Leggiamo i giocatori veri dal database, non dai socket!
+        #Leggiamo i giocatori veri dal database
         players_in_db = await rs.get_all_players(redis, room_id)
         ready_player_ids = set(state.get("ready_player_ids", []))
         

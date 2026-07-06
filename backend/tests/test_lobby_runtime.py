@@ -4,6 +4,7 @@ import pytest
 
 from core.messages import EventType
 from services.lobby_runtime import LobbyRuntime
+from models.game import Player
 
 
 @pytest.mark.asyncio
@@ -55,7 +56,15 @@ async def test_validate_can_start_game_treats_host_as_implicitly_ready(monkeypat
             "ready_player_ids": ["guest1", "guest2"],
         }
 
+    async def fake_get_all_players(redis, room_id):
+        return {
+            "host1": Player("host1", "Host", connected=True),
+            "guest1": Player("guest1", "Guest1", connected=True),
+            "guest2": Player("guest2", "Guest2", connected=True),
+        }
+
     monkeypatch.setattr("services.lobby_runtime.rs.get_game_state", fake_get_game_state)
+    monkeypatch.setattr("services.lobby_runtime.rs.get_all_players", fake_get_all_players)
 
     runtime = LobbyRuntime(
         get_redis=lambda: object(),

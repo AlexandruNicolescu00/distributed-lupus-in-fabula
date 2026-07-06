@@ -239,8 +239,6 @@ async def cast_vote(
     voter = await rs.get_player(r, game_id, voter_id)
     if voter is None or not voter.alive:
         raise ValueError(f"Voter {voter_id} is not an alive player")
-        
-    # Rimosso il blocco if voter.has_voted, ora si può sempre sovrascrivere!
 
     if target_id != SKIP_VOTE_TARGET:
         target = await rs.get_player(r, game_id, target_id)

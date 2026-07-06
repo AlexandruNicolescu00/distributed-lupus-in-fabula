@@ -7,6 +7,7 @@ from models.game import GameState, Phase
 from services.lobby_logic import (
     ensure_domain_player,
     maybe_close_room_for_departing_host,
+    promote_host_if_needed,
     set_player_ready,
     update_lobby_settings,
 )
@@ -38,9 +39,9 @@ async def test_update_lobby_settings_uses_partial_updates_and_defaults(r):
     state = await rs.get_game_state(r, GAME_ID)
 
     assert payload.wolf_count == 2
-    assert payload.seer_count == 1
+    assert payload.seer_count == 0
     assert state["wolf_count"] == 2
-    assert state["seer_count"] == 1
+    assert state["seer_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -64,12 +65,23 @@ async def test_set_player_ready_updates_ready_ids(r):
 
 
 @pytest.mark.asyncio
-async def test_host_disconnect_closes_room_only_in_lobby(r):
+async def test_host_disconnect_promotes_new_host_instead_of_closing_room(r):
     await ensure_domain_player(r, GAME_ID, "host1")
-    payload = await maybe_close_room_for_departing_host(r, GAME_ID, "host1")
-    assert payload is not None
-    assert payload.reason == "host_disconnected"
-
+    await ensure_domain_player(r, GAME_ID, "guest2")
     await rs.set_game_state(r, GAME_ID, GameState(game_id=GAME_ID, phase=Phase.DAY, host_id="host1"))
+
     payload = await maybe_close_room_for_departing_host(r, GAME_ID, "host1")
     assert payload is None
+
+    promoted_host = await promote_host_if_needed(
+        r,
+        GAME_ID,
+        [
+            {"player_id": "guest2", "is_host": True},
+            {"player_id": "host1", "is_host": False},
+        ],
+    )
+    state = await rs.get_game_state(r, GAME_ID)
+
+    assert promoted_host == "guest2"
+    assert state["host_id"] == "guest2"
