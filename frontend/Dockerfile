@@ -48,7 +48,8 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # Template della config runtime + entrypoint che la materializza in config.js
 COPY config.template.js /usr/share/nginx/html/config.template.js
 COPY docker-entrypoint.sh /docker-entrypoint.d.custom/entrypoint.sh
-RUN chmod +x /docker-entrypoint.d.custom/entrypoint.sh
+RUN sed -i 's/\r$//' /docker-entrypoint.d.custom/entrypoint.sh && \
+    chmod +x /docker-entrypoint.d.custom/entrypoint.sh
 
 # Utente non-root
 RUN chown -R nginx:nginx /usr/share/nginx/html && \

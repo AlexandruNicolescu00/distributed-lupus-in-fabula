@@ -25,6 +25,7 @@ const { connect, disconnect, emit, isConnected } = useSocket()
 const showRoleBanner = ref(false)
 const myVote = ref(null)
 const nightActionDone = ref(false)
+const reconnectToast = ref(null)
 const lobbyCode = route.params.id || lobby.lobbyCode
 
 const isCurrentUserHost = computed(() =>
@@ -72,6 +73,18 @@ onMounted(async () => {
   setTimeout(() => {
     showRoleBanner.value = false
   }, 4000)
+
+  const { on: socketOn } = useSocket()
+  socketOn('game_resumed', (message) => {
+    const raw = message?.payload ?? message
+    const payload = typeof raw === 'string' ? JSON.parse(raw) : raw
+    if (payload?.reason === 'player_reconnected' && payload?.client_id) {
+      const p = game.players.find(pl => pl.player_id === payload.client_id)
+      const name = p?.username ?? payload.client_id
+      reconnectToast.value = `✅ ${name} è rientrato nel villaggio!`
+      setTimeout(() => { reconnectToast.value = null }, 5000)
+    }
+  })
 })
 
 onUnmounted(() => {
@@ -224,13 +237,15 @@ function leaveGame() {
       </div>
     </Transition>
 
+    <Transition name="toast-slide">
+      <div v-if="reconnectToast" class="reconnect-toast">{{ reconnectToast }}</div>
+    </Transition>
+
     <Transition name="night">
       <div v-if="showNightOverlay" class="night-overlay" :style="nightBgStyle">
         
         <div v-if="!game.myRole" class="night-content role-unknown">
-          <div class="night-moon">🎭</div>
-          <div class="night-title">Assegnazione Ruoli...</div>
-          <div class="night-sub">Chiudi gli occhi. Il tuo destino sta per essere deciso.</div>
+          <div class="loader"></div>
         </div>
 
         <div v-else-if="ownPlayerCard && !ownPlayerCard.alive" class="night-content">
@@ -326,7 +341,13 @@ function leaveGame() {
     </header>
 
     <div v-if="game.isPaused" class="pause-banner">
-      ⚠️ Partita in pausa: {{ game.pauseReason || 'In attesa che i giocatori rientrino' }}...
+      <span v-if="game.graceDeadline">
+        ⚠️ <strong>{{ game.graceClientId }}</strong> si è disconnesso —
+        rientra tra <strong class="grace-countdown">{{ game.graceSecondsLeft }}s</strong>
+      </span>
+      <span v-else>
+        ⚠️ Partita in pausa: {{ game.pauseReason || 'In attesa che i giocatori rientrino' }}...
+      </span>
     </div>
 
     <div class="game-body" v-show="!showNightOverlay">
@@ -474,7 +495,8 @@ function leaveGame() {
   color: rgba(232,224,213,0.85);
 }
 .action-feedback { padding: 1rem; background: rgba(192, 132, 252, 0.1); border-radius: 10px; font-size: 0.85rem; border: 1px solid rgba(192, 132, 252, 0.3); }
-.pause-banner { padding: 0.9rem 2rem; background: rgba(248,113,113,0.08); color: #fca5a5; border-bottom: 1px solid rgba(248,113,113,0.15); }
+.pause-banner { padding: 0.9rem 2rem; background: rgba(248,113,113,0.08); color: #fca5a5; border-bottom: 1px solid rgba(248,113,113,0.15); text-align: center; }
+.grace-countdown { font-size: 1.1em; color: #f87171; }
 .role-banner {
   position: fixed;
   top: 1.5rem;
@@ -533,4 +555,24 @@ function leaveGame() {
 @media (max-width: 800px) {
   .wolf-dashboard { grid-template-columns: 1fr; }
 }
+.reconnect-toast {
+  position: fixed;
+  top: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(34, 197, 94, 0.15);
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  color: #86efac;
+  padding: 0.75rem 1.5rem;
+  border-radius: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+  backdrop-filter: blur(8px);
+  z-index: 9999;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 4px 20px rgba(34, 197, 94, 0.2);
+}
+.toast-slide-enter-active, .toast-slide-leave-active { transition: all 0.4s ease; }
+.toast-slide-enter-from, .toast-slide-leave-to { opacity: 0; transform: translateX(-50%) translateY(-20px); }
 </style>

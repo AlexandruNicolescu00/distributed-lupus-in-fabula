@@ -263,13 +263,11 @@ export const useLobbyStore = defineStore('lobby', () => {
         players.value = parsePlayers(payload.players, state)
       }
       
-      // Mantiene i ruoli ricevuti. Se non li riceve mantiene i correnti.
-      if (state.wolf_count !== undefined || state.seer_count !== undefined) {
-        roleSetup.value.wolves = state.wolf_count ?? roleSetup.value.wolves
-        roleSetup.value.seers = state.seer_count ?? roleSetup.value.seers
-      } else if (state.role_setup) {
-        roleSetup.value.wolves = state.role_setup.wolves ?? roleSetup.value.wolves
-        roleSetup.value.seers = state.role_setup.seers ?? roleSetup.value.seers
+      if (state.wolf_count != null) roleSetup.value.wolves = state.wolf_count
+      if (state.seer_count != null) roleSetup.value.seers  = state.seer_count
+      if (state.role_setup) {
+        if (state.role_setup.wolves != null) roleSetup.value.wolves = state.role_setup.wolves
+        if (state.role_setup.seers  != null) roleSetup.value.seers  = state.role_setup.seers
       }
     })
 
@@ -309,12 +307,10 @@ export const useLobbyStore = defineStore('lobby', () => {
     const handleSettings = (message) => {
       const payload = extractPayload(message)
       const setup = payload.role_setup || payload
-      if (setup.wolves !== undefined || setup.wolf_count !== undefined) {
-        roleSetup.value.wolves = setup.wolves ?? setup.wolf_count
-      }
-      if (setup.seers !== undefined || setup.seer_count !== undefined) {
-        roleSetup.value.seers = setup.seers ?? setup.seer_count
-      }
+      const wolves = setup.wolves ?? setup.wolf_count
+      const seers  = setup.seers  ?? setup.seer_count
+      if (wolves != null) roleSetup.value.wolves = wolves
+      if (seers  != null) roleSetup.value.seers  = seers
     }
     on('role_setup_updated', handleSettings)
     on('lobby:settings_updated', handleSettings)

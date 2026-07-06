@@ -38,6 +38,8 @@ export const useGameStore = defineStore('game', () => {
   const error = ref(null)
   const isPaused = ref(false)
   const pauseReason = ref('')
+  const graceDeadline = ref(null)   // timestamp (secondi) di scadenza del grace timer
+  const graceClientId = ref(null)   // chi si è disconnesso
   const seerResult = ref(null)
   const noElimination = ref(false)
   const noEliminationReason = ref('')
@@ -63,6 +65,11 @@ export const useGameStore = defineStore('game', () => {
   const secondsLeft = computed(() => {
     if (!timerEnd.value) return 0
     return Math.max(0, Math.ceil(timerEnd.value - currentTime.value))
+  })
+
+  const graceSecondsLeft = computed(() => {
+    if (!graceDeadline.value) return 0
+    return Math.max(0, Math.ceil(graceDeadline.value - currentTime.value))
   })
 
   const phaseDurations = { DAY: 10, VOTING: 60, NIGHT: 45 }
@@ -308,11 +315,17 @@ export const useGameStore = defineStore('game', () => {
       const payload = extractPayload(message)
       isPaused.value = true
       pauseReason.value = payload.reason ?? ''
+      if (payload.grace_seconds) {
+        graceDeadline.value = Date.now() / 1000 + payload.grace_seconds
+        graceClientId.value = payload.client_id ?? null
+      }
     })
 
     on('game_resumed', (message) => {
       const payload = extractPayload(message)
       isPaused.value = false
+      graceDeadline.value = null
+      graceClientId.value = null
       if (payload.phase) phase.value = payload.phase
       if (payload.timer_end) timerEnd.value = payload.timer_end
     })
@@ -330,6 +343,8 @@ export const useGameStore = defineStore('game', () => {
     currentRoomCode.value = ''
     isPaused.value = false
     pauseReason.value = ''
+    graceDeadline.value = null
+    graceClientId.value = null
     seerResult.value = null
     noElimination.value = false
     noEliminationReason.value = ''
@@ -357,7 +372,8 @@ export const useGameStore = defineStore('game', () => {
 
   return {
     phase, round, players, currentPlayerId, hostId, myRole, wolfCompanions, winner, timerEnd,
-    isLoading, error, isPaused, pauseReason, seerResult, noElimination, noEliminationReason,
+    isLoading, error, isPaused, pauseReason, graceDeadline, graceClientId, graceSecondsLeft,
+    seerResult, noElimination, noEliminationReason,
     voteMap, gameEndPlayers, alivePlayers, deadPlayers, me, isAlive, isWolf, isSeer, isVillager,
     secondsLeft, timerProgress, voteCount, normalizeRoleSetup, normalizePlayers, bootstrapFromLobby,
     loadState, handleStateSync, vote, wolfVote, seerAction, listenToGameEvents, reset, PHASES, ROLES, WINNERS,
