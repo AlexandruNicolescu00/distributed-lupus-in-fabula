@@ -294,11 +294,14 @@ export const useLobbyStore = defineStore('lobby', () => {
     const handleReady = (message) => {
       const payload = extractPayload(message)
       if (payload.ready_player_ids) {
-          readyPlayerIds.value = [...payload.ready_player_ids]
+        readyPlayerIds.value = [...payload.ready_player_ids]
       }
-      
+
       if (payload.players) {
         players.value = parsePlayers(payload.players, { ready_player_ids: readyPlayerIds.value })
+      } else if (payload.ready_player_ids) {
+        // nessun player list nel payload: aggiorna i flag ready direttamente sulla lista locale
+        updateReadyStatesFromIds(payload.ready_player_ids)
       }
     }
     on('player_ready', handleReady)
@@ -381,6 +384,10 @@ export const useLobbyStore = defineStore('lobby', () => {
 
   function toggleReady() {
     const newState = !currentPlayer.value?.ready
+    // update ottimistico locale prima della conferma dal server
+    if (currentPlayerId.value) {
+      setPlayerReadyLocally(currentPlayerId.value, newState)
+    }
     emit('lobby:player_ready', { ready: newState })
   }
 

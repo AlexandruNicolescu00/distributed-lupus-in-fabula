@@ -20,10 +20,12 @@ export const useChatStore = defineStore('chat', () => {
 
   const visibleMessages = computed(() => {
     const gameStore = useGameStore()
+    const isDead = Boolean(gameStore.me) && !gameStore.isAlive
     return messages.value.filter((msg) => {
+      if (msg.channel === CHANNELS.DEAD) return isDead
+      if (isDead) return false  // i morti vedono solo il canale dead
       if (msg.channel === CHANNELS.GLOBAL) return true
       if (msg.channel === CHANNELS.WOLVES) return Boolean(gameStore.isWolf)
-      if (msg.channel === CHANNELS.DEAD) return Boolean(gameStore.me) && !gameStore.isAlive
       return false
     })
   })
@@ -37,7 +39,8 @@ export const useChatStore = defineStore('chat', () => {
 
   const canChat = computed(() => {
     const gameStore = useGameStore()
-    if (gameStore.phase === PHASES.ENDED) return false
+    if (gameStore.phase === PHASES.LOBBY || gameStore.phase === PHASES.ENDED) return false
+    if (gameStore.phase === PHASES.NIGHT && !gameStore.isWolf && gameStore.isAlive) return false
     return true
   })
 
