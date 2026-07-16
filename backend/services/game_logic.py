@@ -1,16 +1,8 @@
 """
 services/game_logic.py
 
-All functions receive an aioredis.Redis client as first argument and operate
-on a specific game_id. They use core/state_store.py for all I/O.
-
-Implemented here
-  - assign_roles()       
-  - set_phase()          
-  - check_winner()       
-  - cast_vote()          
-  - tally_votes()        
-  - eliminate_player()   
+Tutte le funzioni ricevono un client aioredis.Redis come primo argomento e
+operano su uno specifico game_id. Usano `core/state_store.py` per tutta l'I/O.
 """
 
 import logging
@@ -43,9 +35,6 @@ def _player_payload(player: Player, *, reveal_role: bool = True) -> dict[str, ob
         "role": player.role.value if reveal_role and player.role else None,
     }
 
-
-# ── F1-2 · assign_roles() ─────────────────────────────────────────────────────
-
 def _wolf_count(player_count: int) -> int:
     if player_count >= 10:
         return 3
@@ -56,11 +45,10 @@ def _wolf_count(player_count: int) -> int:
 
 def _default_role_counts(total_players: int) -> tuple[int, int]:
     """
-    Ritorna il bilanciamento automatico: (wolves_count, seers_count).
-    Cambiato per disabilitare l'aggiunta automatica del veggente!
+    Restituisce il bilanciamento automatico: (wolves_count, seers_count).
     """
     wolves = max(1, total_players // 4)
-    return (wolves, 0) # Ritorna sempre 0 veggenti di default
+    return (wolves, 0)  # Restituisce sempre 0 veggenti di default
 
 
 def _validate_role_counts(player_count: int, wolf_count: int, seer_count: int) -> None:
@@ -81,9 +69,7 @@ async def assign_roles(
     wolf_count: int | None = None,
     seer_count: int | None = None,
 ) -> dict[str, Role]:
-    """
-    Randomly assigns roles to all players and persists them on Redis.
-    """
+    """Assegna ruoli casuali a tutti i giocatori e li persiste su Redis."""
     if wolf_count is None or seer_count is None:
         default_wolves, default_seers = _default_role_counts(len(player_ids))
         wolf_count = default_wolves if wolf_count is None else wolf_count
@@ -103,8 +89,8 @@ async def assign_roles(
         else:
             assignment[pid] = Role.VILLAGER
 
-    # Persist each player with their role (1 lettura hgetall + 1 pipeline di write
-    # invece di O(n) round-trip — rif. teoria: scalabilità).
+    # Persiste ogni giocatore con il proprio ruolo (1 lettura hgetall + 1 pipeline
+    # di scrittura invece di O(n) andate/ritorni - rif. teoria: scalabilità).
     existing = await rs.get_all_players(r, game_id)
     to_persist = []
     for pid, role in assignment.items():
@@ -142,9 +128,6 @@ def build_role_payloads(
             ] if role == Role.WOLF else [],
         )
     return payloads
-
-
-# ── F1-3 · set_phase() ────────────────────────────────────────────────────────
 
 async def set_phase(
     r: aioredis.Redis,
@@ -199,9 +182,6 @@ def build_phase_changed_payload(
         timer_end=timer_end,
     )
 
-
-# ── F1-3 · check_winner() ────────────────────────────────────────────────────
-
 async def check_winner(r: aioredis.Redis, game_id: str) -> Optional[Winner]:
     state = await rs.get_game_state(r, game_id)
     if state and state.get("phase") == Phase.ENDED.value:
@@ -227,9 +207,6 @@ async def check_winner(r: aioredis.Redis, game_id: str) -> Optional[Winner]:
 
     return None
 
-
-# ── F1-4 · cast_vote() ───────────────────────────────────────────────────────
-
 async def cast_vote(
     r: aioredis.Redis,
     game_id: str,
@@ -245,14 +222,14 @@ async def cast_vote(
         if target is None or not target.alive:
             raise ValueError(f"Target {target_id} is not an alive player")
 
-    # Mark voter as voted
+    # Segna il votante come già votato.
     voter.has_voted = True
     await rs.set_player(r, game_id, voter)
 
-    # Record vote (questo sovrascriverà automaticamente il voto precedente in Redis)
+    # Registra il voto (sovrascrive automaticamente il voto precedente in Redis).
     await rs.record_vote(r, game_id, voter_id, target_id)
 
-    # Build tally for broadcast
+    # Costruisce il conteggio per il broadcast.
     all_votes = await rs.get_votes(r, game_id)
     
     await rs.patch_game_state(r, game_id, vote_map=all_votes)
@@ -280,9 +257,6 @@ def _build_vote_update(
         skip_count=skip_count,
     )
 
-
-# ── F1-4 · tally_votes() ─────────────────────────────────────────────────────
-
 async def tally_votes(r: aioredis.Redis, game_id: str) -> Optional[str]:
     all_votes = await rs.get_votes(r, game_id)
 
@@ -300,12 +274,10 @@ async def tally_votes(r: aioredis.Redis, game_id: str) -> Optional[str]:
 
     if len(leaders) > 1:
         logger.info("Daytime vote tie between %s | game=%s", leaders, game_id)
-        return None  # tie → no elimination
+        return None  # pareggio -> nessuna eliminazione
 
     return leaders[0]
 
-
-# ── F1-4 · eliminate_player() ────────────────────────────────────────────────
 
 async def eliminate_player(
     r: aioredis.Redis,
@@ -323,7 +295,7 @@ async def eliminate_player(
 
     await rs.clear_votes(r, game_id)
 
-    # Reset has_voted flag for all remaining players (pipeline: 1 RTT)
+    # Reimposta il flag has_voted per tutti i giocatori rimanenti (pipeline: 1 RTT).
     all_players = await rs.get_all_players(r, game_id)
     to_reset = []
     for p in all_players.values():
@@ -348,10 +320,6 @@ async def eliminate_player(
         player=_player_payload(player),
     )
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Night game state
-# ═══════════════════════════════════════════════════════════════════════════════
 
 _ACTION_RULES: dict[str, tuple[Phase, Role | None, bool]] = {
     "cast_vote":        (Phase.VOTING,   None,          False),
@@ -390,8 +358,6 @@ async def can_player_act(
 
     if uses_has_acted and player.has_acted:
         return False, f"Player {player_id} has already acted this night"
-
-    # Rimosso il blocco if action == "cast_vote" and player.has_voted.
 
     return True, ""
 
@@ -442,9 +408,6 @@ async def record_seer_action(
     await rs.set_player(r, game_id, seer)
 
     logger.info("Seer action recorded | game=%s seer=%s target=%s", game_id, seer_id, target_id)
-
-
-# ── F2-3 · resolve_night() ────────────────────────────────────────────────────
 
 async def resolve_night(
     r: aioredis.Redis,
@@ -502,7 +465,7 @@ async def resolve_night(
     await rs.clear_wolf_votes(r, game_id)
     await rs.clear_seer_action(r, game_id)
 
-    # Reset has_acted for all players (next night) — pipeline: 1 RTT
+    # Reimposta has_acted per tutti i giocatori (notte successiva) - pipeline: 1 RTT.
     all_players = await rs.get_all_players(r, game_id)
     to_reset = []
     for p in all_players.values():
@@ -516,9 +479,6 @@ async def resolve_night(
         "seer_target_id":   seer_target_id,
         "seer_target_role": seer_target_role,
     }
-
-
-# ── F2-4 · advance_phase() ────────────────────────────────────────────────────
 
 async def advance_phase(
     r: aioredis.Redis,
@@ -565,7 +525,7 @@ async def advance_phase(
             await _end_game(r, game_id, winner, current_round, result)
             return result
 
-        # Reset pulito prima di ogni notte (belt-and-suspenders rispetto a resolve_night)
+        # Ripristino completo prima di ogni notte (misura di sicurezza aggiuntiva rispetto a resolve_night).
         await rs.clear_wolf_votes(r, game_id)
         await rs.clear_seer_action(r, game_id)
         all_players_pre = await rs.get_all_players(r, game_id)

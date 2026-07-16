@@ -1,16 +1,9 @@
-"""
-tests/test_backend-init.py — Tests for Phase 0 (backend initialization).
-
-Run with:
-    pytest tests/test_backend-init.py -v
-"""
-
 import pytest
 import asyncio
 from dataclasses import asdict
 
 # ---------------------------------------------------------------------------
-# F0-1 — models/game.py
+# models/game.py
 # ---------------------------------------------------------------------------
 
 class TestRole:
@@ -111,7 +104,7 @@ class TestGameState:
 
 
 # ---------------------------------------------------------------------------
-# F0-2 — models/events.py
+# models/events.py
 # ---------------------------------------------------------------------------
 
 class TestEvents:
@@ -191,7 +184,7 @@ class TestEvents:
 
 
 # ---------------------------------------------------------------------------
-# F0-3a — core/config.py
+# core/config.py
 # ---------------------------------------------------------------------------
 
 class TestSettings:

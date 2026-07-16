@@ -1,12 +1,3 @@
-"""
-tests/test_game_logic.py — TDD tests for Fase 1 + Fase 2.
-
-Run with:
-    pytest tests/test_game_logic.py -v
-
-Uses fakeredis — no real Redis instance needed.
-"""
-
 import pytest
 import pytest_asyncio
 import fakeredis.aioredis as fakeredis

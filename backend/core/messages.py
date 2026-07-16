@@ -1,9 +1,12 @@
-# Questo file definisce il formato dei messaggi scambiati su Redis Pub/Sub
-# e tra backend e client WebSocket.
-#
-# Gli eventi gameplay sono allineati alle dataclass definite in
-# `backend/models/events.py`. Manteniamo anche alcuni eventi di sistema/stanza
-# già usati nel backend corrente.
+'''
+
+Questo file definisce il formato dei messaggi scambiati su Redis Pub/Sub
+e tra backend e client WebSocket.
+
+Gli eventi gameplay sono allineati alle dataclass definite in
+`backend/models/events.py`. Manteniamo anche alcuni eventi di sistema/stanza
+già usati nel backend corrente.
+'''
 
 from __future__ import annotations
 

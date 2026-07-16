@@ -1,15 +1,15 @@
 """
-models/events.py — Socket.IO event structures.
+models/events.py - Strutture degli eventi Socket.IO.
 
-Each dataclass represents the payload of an event that the server
-sends to clients (or receives from clients). They are JSON-serializable
-via dataclasses.asdict().
+Ogni dataclass rappresenta il payload di un evento che il server
+invia ai client (o riceve dai client). Sono serializzabili in JSON
+tramite `dataclasses.asdict()`.
 
-Naming convention:
-  - *Payload classes → event emitted by the server to clients
-  - *Event classes   → event received from client to server
+Convenzione di naming:
+  - classi *Payload → evento emesso dal server verso i client
+  - classi *Event   → evento ricevuto dal client verso il server
 
-All optional fields use Optional[X] = None for clarity.
+Tutti i campi opzionali usano `Optional[X] = None` per chiarezza.
 """
 
 from dataclasses import dataclass, asdict
@@ -19,36 +19,36 @@ from models.game import Role, Phase, Winner
 
 
 # ---------------------------------------------------------------------------
-# Helper
+# Funzioni ausiliarie
 # ---------------------------------------------------------------------------
 
 def to_dict(payload) -> dict:
-    """Serializes a dataclass event into a JSON-safe dictionary."""
+    """Serializza un evento dataclass in un dizionario compatibile con JSON."""
     return asdict(payload)
 
 
 # ---------------------------------------------------------------------------
-# Events emitted by the server → client (broadcast or unicast)
+# Eventi emessi dal server → client (broadcast o unicast)
 # ---------------------------------------------------------------------------
 
 @dataclass
 class VoteUpdatePayload:
     """
-    Event: ``vote_update``
-    Direction: broadcast to all alive players.
-    Purpose: real-time update of vote distribution during
-             the VOTING phase.
+    Evento: ``vote_update``
+    Direzione: broadcast a tutti i giocatori vivi.
+    Scopo: aggiornamento in tempo reale della distribuzione dei voti durante
+           la fase VOTING.
 
-    Attributes:
-        voter_id:    who cast the vote.
-        target_id:   who received the vote.
-        vote_counts: map { player_id → number of received votes }.
+    Attributi:
+        voter_id:    chi ha espresso il voto.
+        target_id:   chi ha ricevuto il voto.
+        vote_counts: mappa { player_id → numero di voti ricevuti }.
     """
     event: str                      = "vote_update"
     voter_id:    str                = ""
     target_id:   str                = ""
-    vote_counts: dict[str, int]     = None  # type: ignore[assignment]
-    skip_count: int = 0   # count of "skip" votes
+    vote_counts: dict[str, int]     = None
+    skip_count: int = 0   # conteggio dei voti "skip"
 
     def __post_init__(self):
         if self.vote_counts is None:
@@ -58,13 +58,14 @@ class VoteUpdatePayload:
 @dataclass
 class GameStateSyncPayload:
     """
-    Event: ``game_state_sync``
-    Direction: unicast to the connecting client.
-    Purpose: provides the latest room/game snapshot after connect or reconnect.
+    Evento: ``game_state_sync``
+    Direzione: unicast al client che si connette.
+    Scopo: fornisce l'ultima istantanea della stanza/partita dopo la connessione
+           o la riconnessione.
     """
     event: str = "game_state_sync"
-    state: dict = None  # type: ignore[assignment]
-    players: list[str] = None  # type: ignore[assignment]
+    state: dict = None  
+    players: list[str] = None  
 
     def __post_init__(self):
         if self.state is None:
@@ -76,11 +77,11 @@ class GameStateSyncPayload:
 @dataclass
 class PlayerPresencePayload:
     """
-    Shared payload shape for ``player_joined`` and ``player_left``.
+    Forma di payload condivisa per ``player_joined`` e ``player_left``.
     """
     client_id: str = ""
     player: Optional[dict] = None
-    players: list[str] = None  # type: ignore[assignment]
+    players: list[str] = None 
 
     def __post_init__(self):
         if self.players is None:
@@ -110,7 +111,7 @@ class LobbyPlayerReadyChangedPayload:
     event: str = "lobby:player_ready_changed"
     client_id: str = ""
     ready: bool = False
-    ready_player_ids: list[str] = None  # type: ignore[assignment]
+    ready_player_ids: list[str] = None  
 
     def __post_init__(self):
         if self.ready_player_ids is None:
@@ -127,20 +128,20 @@ class RoomClosedPayload:
 @dataclass
 class PlayerEliminatedPayload:
     """
-    Event: ``player_eliminated``
-    Direction: broadcast to all players.
-    Purpose: notifies a daytime elimination; the role is revealed.
+    Evento: ``player_eliminated``
+    Direzione: broadcast a tutti i giocatori.
+    Scopo: notifica un'eliminazione diurna; il ruolo viene rivelato.
 
-    Attributes:
-        player_id: eliminated player.
-        username:  player's name.
-        role:      revealed role (only for DAYTIME elimination).
-        round:     round in which the elimination occurred.
+    Attributi:
+        player_id: giocatore eliminato.
+        username:  nome del giocatore.
+        role:      ruolo rivelato (solo per eliminazione DIURNA).
+        round:     round in cui è avvenuta l'eliminazione.
     """
     event: str      = "player_eliminated"
     player_id: str  = ""
     username: str   = ""
-    role: str       = ""      # Role.value
+    role: str       = ""      
     round: int      = 0
     player: Optional[dict] = None
 
@@ -148,13 +149,13 @@ class PlayerEliminatedPayload:
 @dataclass
 class PlayerKilledPayload:
     """
-    Event: ``player_killed``
-    Direction: broadcast to all players.
-    Purpose: notifies a nighttime death; the role is NOT revealed.
+    Evento: ``player_killed``
+    Direzione: broadcast a tutti i giocatori.
+    Scopo: notifica una morte notturna; il ruolo NON viene rivelato.
 
-    Attributes:
-        player_id: player killed during the night.
-        username:  player's name.
+    Attributi:
+        player_id: giocatore ucciso durante la notte.
+        username:  nome del giocatore.
     """
     event: str      = "player_killed"
     player_id: str  = ""
@@ -165,25 +166,25 @@ class PlayerKilledPayload:
 @dataclass
 class SeerResultPayload:
     """
-    Event: ``seer_result``
-    Direction: unicast to the Seer only.
-    Purpose: response to the Seer's nighttime action.
+    Evento: ``seer_result``
+    Direzione: unicast solo al Veggente.
+    Scopo: risposta all'azione notturna del Veggente.
 
-    Attributes:
-        target_id:   inspected player.
-        target_name: username of the inspected player.
-        role:        role of the inspected player.
+    Attributi:
+        target_id:   giocatore ispezionato.
+        target_name: nome del giocatore ispezionato.
+        role:        ruolo del giocatore ispezionato.
     """
     event: str          = "seer_result"
     target_id: str      = ""
     target_name: str    = ""
-    role: str           = ""   # Role.value
+    role: str           = ""   
 
 
 @dataclass
 class ActionAcceptedPayload:
     """
-    Shared ack payload for accepted player actions.
+    Payload di conferma condiviso per le azioni del giocatore accettate.
     """
     target_id: str = ""
     accepted: bool = True
@@ -202,22 +203,22 @@ class SeerActionAcceptedPayload(ActionAcceptedPayload):
 @dataclass
 class GameEndedPayload:
     """
-    Event: ``game_ended``
-    Direction: broadcast to all players.
-    Purpose: notifies the end of the game with the winner and final state.
+    Evento: ``game_ended``
+    Direzione: broadcast a tutti i giocatori.
+    Scopo: notifica la fine della partita con il vincitore e lo stato finale.
 
-    Attributes:
-        winner:   who won (VILLAGERS | WOLVES).
-        reason:   descriptive string of the reason (e.g. "all_wolves_dead").
-        round:    round in which the game ended.
-        players:  list of dictionaries { player_id, username, role, alive }
-                  to display the final screen.
+    Attributi:
+        winner:   chi ha vinto (VILLAGERS | WOLVES).
+        reason:   stringa descrittiva del motivo (es. "all_wolves_dead").
+        round:    round in cui la partita è terminata.
+        players:  lista di dizionari { player_id, username, role, alive }
+                  da mostrare nella schermata finale.
     """
     event: str              = "game_ended"
-    winner: str             = ""    # Winner.value
+    winner: str             = ""    
     reason: str             = ""
     round: int              = 0
-    players: list[dict]     = None  # type: ignore[assignment]
+    players: list[dict]     = None  
 
     def __post_init__(self):
         if self.players is None:
@@ -227,12 +228,12 @@ class GameEndedPayload:
 @dataclass
 class GamePausedPayload:
     """
-    Event: ``game_paused``
-    Direction: broadcast to all connected players.
-    Purpose: notifies that the game is paused (e.g. all wolves disconnected).
+    Evento: ``game_paused``
+    Direzione: broadcast a tutti i giocatori connessi.
+    Scopo: notifica che la partita è in pausa (es. tutti i lupi disconnessi).
 
-    Attributes:
-        reason: reason for the pause (e.g. "all_wolves_disconnected").
+    Attributi:
+        reason: motivo della pausa (es. "all_wolves_disconnected").
     """
     event: str   = "game_paused"
     reason: str  = ""
@@ -241,33 +242,33 @@ class GamePausedPayload:
 @dataclass
 class GameResumedPayload:
     """
-    Event: ``game_resumed``
-    Direction: broadcast to all connected players.
-    Purpose: notifies that the game has resumed after a pause.
+    Evento: ``game_resumed``
+    Direzione: broadcast a tutti i giocatori connessi.
+    Scopo: notifica che la partita è ripresa dopo una pausa.
 
-    Attributes:
-        phase:     current phase at the moment of resumption.
-        timer_end: UNIX timestamp of timer expiration (float).
+    Attributi:
+        phase:     fase corrente al momento della ripresa.
+        timer_end: timestamp UNIX della scadenza del timer (float).
     """
     event: str              = "game_resumed"
-    phase: str              = ""     # Phase.value
+    phase: str              = ""     
     timer_end: Optional[float] = None
 
 
 @dataclass
 class PhaseChangedPayload:
     """
-    Event: ``phase_changed``
-    Direction: broadcast to all players.
-    Purpose: notifies a phase transition with the new timer.
+    Evento: ``phase_changed``
+    Direzione: broadcast a tutti i giocatori.
+    Scopo: notifica un cambio di fase con il nuovo timer.
 
-    Attributes:
-        phase:     new phase.
-        round:     current round.
-        timer_end: UNIX timestamp of expiration (float).
+    Attributi:
+        phase:     nuova fase.
+        round:     round corrente.
+        timer_end: timestamp UNIX della scadenza (float).
     """
     event: str              = "phase_changed"
-    phase: str              = ""     # Phase.value
+    phase: str              = ""     
     round: int              = 0
     timer_end: Optional[float] = None
 
@@ -275,18 +276,18 @@ class PhaseChangedPayload:
 @dataclass
 class RoleAssignedPayload:
     """
-    Event: ``role_assigned``
-    Direction: unicast to a single player.
-    Purpose: communicates the assigned role at the start of the game.
+    Evento: ``role_assigned``
+    Direzione: unicast a un singolo giocatore.
+    Scopo: comunica il ruolo assegnato all'inizio della partita.
 
-    Attributes:
-        role:             assigned role.
-        wolf_companions:  list of { player_id, username } of fellow wolves.
-                          Empty list for Villager and Seer.
+    Attributi:
+        role:             ruolo assegnato.
+        wolf_companions:  lista di { player_id, username } dei compagni lupo.
+                          Lista vuota per Villager e Seer.
     """
     event: str                  = "role_assigned"
-    role: str                   = ""   # Role.value
-    wolf_companions: list[dict] = None  # type: ignore[assignment]
+    role: str                   = ""   
+    wolf_companions: list[dict] = None 
 
     def __post_init__(self):
         if self.wolf_companions is None:
@@ -296,12 +297,12 @@ class RoleAssignedPayload:
 @dataclass
 class NoEliminationPayload:
     """
-    Event: ``no_elimination``
-    Direction: broadcast to all players.
-    Purpose: notifies that the daytime vote did not result in an elimination
-             (tie or no votes).
+    Evento: ``no_elimination``
+    Direzione: broadcast a tutti i giocatori.
+    Scopo: notifica che il voto diurno non ha prodotto un'eliminazione
+           (pareggio o nessun voto).
 
-    Attributes:
+    Attributi:
         reason: "tie" | "no_votes"
     """
     event: str  = "no_elimination"
@@ -311,22 +312,22 @@ class NoEliminationPayload:
 @dataclass
 class ErrorPayload:
     """
-    Event: ``error``
-    Direction: unicast to the client whose action failed.
+    Evento: ``error``
+    Direzione: unicast al client la cui azione è fallita.
     """
     event: str = "error"
     message: str = ""
 
 
 # ---------------------------------------------------------------------------
-# Events received from client → server
+# Eventi ricevuti dal client → server
 # ---------------------------------------------------------------------------
 
 @dataclass
 class CastVoteEvent:
     """
-    Event: ``cast_vote``  (client → server)
-    Purpose: records a player's daytime vote.
+    Evento: ``cast_vote``  (client → server)
+    Scopo: registra il voto diurno di un giocatore.
     """
     voter_id:  str = ""
     target_id: str = ""
@@ -335,8 +336,8 @@ class CastVoteEvent:
 @dataclass
 class WolfVoteEvent:
     """
-    Event: ``wolf_vote``  (client → server)
-    Purpose: records the private nighttime vote of a Werewolf.
+    Evento: ``wolf_vote``  (client → server)
+    Scopo: registra il voto notturno privato di un Lupo.
     """
     wolf_id:   str = ""
     target_id: str = ""
@@ -345,8 +346,8 @@ class WolfVoteEvent:
 @dataclass
 class SeerActionEvent:
     """
-    Event: ``seer_action``  (client → server)
-    Purpose: the Seer chooses who to inspect during the night.
+    Evento: ``seer_action``  (client → server)
+    Scopo: il Veggente sceglie chi ispezionare durante la notte.
     """
     seer_id:   str = ""
     target_id: str = ""
@@ -355,8 +356,8 @@ class SeerActionEvent:
 @dataclass
 class LobbyUpdateSettingsEvent:
     """
-    Event: ``lobby:update_settings``  (client → server)
-    Purpose: updates pre-game lobby settings controlled by the host.
+    Evento: ``lobby:update_settings``  (client → server)
+    Scopo: aggiorna le impostazioni della lobby pre-partita controllate dall'host.
     """
     wolf_count: Optional[int] = None
     seer_count: Optional[int] = None
@@ -365,7 +366,7 @@ class LobbyUpdateSettingsEvent:
 @dataclass
 class LobbyPlayerReadyEvent:
     """
-    Event: ``lobby:player_ready``  (client → server)
-    Purpose: toggles the ready state of a connected lobby player.
+    Evento: ``lobby:player_ready``  (client → server)
+    Scopo: alterna lo stato di pronto di un giocatore connesso in lobby.
     """
     ready: bool = True

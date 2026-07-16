@@ -1,9 +1,6 @@
-# PubSubManager — invariato nella logica Redis Pub/Sub.
-# Cambia solo il broadcast: invece di usare ConnectionManager.broadcast_to_room()
-# usa sio.emit() direttamente, che gestisce l'invio tramite Socket.IO rooms.
-#
-# Flusso:
-#   Redis PUBLISH → _listener_loop → _handle_message → sio.emit(room=room_id)
+'''
+PubSubManager
+'''
 
 import asyncio
 import logging

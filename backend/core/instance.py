@@ -1,15 +1,11 @@
-# backend/core/instance.py
-# ─────────────────────────────────────────────────────────────────────────────
-# Modulo indipendente che espone INSTANCE_ID.
-# Separato da pubsub/manager.py per evitare import circolari:
-#
-#   PRIMA (circolare):
-#     pubsub/manager.py  →  websocket/connection_manager.py  →  pubsub/manager.py ✗
-#
-#   ORA (aciclico):
-#     pubsub/manager.py         →  core/instance.py  ✓
-#     websocket/connection_manager.py  →  core/instance.py  ✓
-# ─────────────────────────────────────────────────────────────────────────────
+'''
+Modulo indipendente che espone INSTANCE_ID.
+Separato da pubsub/manager.py per evitare import circolari:
+
+    pubsub/manager.py         →  core/instance.py  
+    websocket/connection_manager.py  →  core/instance.py 
+'''
+
 import os
 import uuid
 

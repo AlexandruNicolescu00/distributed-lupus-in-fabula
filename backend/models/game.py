@@ -1,35 +1,35 @@
 """
-models/game.py — Shared type contract across all modules.
+models/game.py - Contratto di tipi condiviso tra tutti i moduli.
 
-Defines:
-  - Role:      player roles
-  - Phase:     game loop phases
-  - Player:    state of a single player
-  - GameState: global state of a game
+Definisce:
+  - Role:      ruoli dei giocatori
+  - Phase:     fasi del ciclo di gioco
+  - Player:    stato di un singolo giocatore
+  - GameState: stato globale di una partita
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
-SKIP_VOTE_TARGET = "__skip__"  # Special target_id for "skip" votes during the VOTING phase.
+SKIP_VOTE_TARGET = "__skip__"  # target_id speciale per i voti "skip" durante la fase VOTING.
 
 
 # ---------------------------------------------------------------------------
-# Enums
+# Enum
 # ---------------------------------------------------------------------------
 
 class Role(str, Enum):
-    """Roles assignable to players."""
+    """Ruoli assegnabili ai giocatori."""
     VILLAGER = "VILLAGER"
     WOLF     = "WOLF"
     SEER     = "SEER"
 
 
 class Phase(str, Enum):
-    """Game loop phases.
+    """Fasi del ciclo di gioco.
 
-    Order: LOBBY → DAY → VOTING → NIGHT → (loop) → ENDED
+    Ordine: LOBBY → DAY → VOTING → NIGHT → (loop) → ENDED
     """
     LOBBY  = "LOBBY"
     DAY    = "DAY"
@@ -39,28 +39,28 @@ class Phase(str, Enum):
 
 
 class Winner(str, Enum):
-    """Possible winners of a finished game."""
+    """Possibili vincitori di una partita conclusa."""
     VILLAGERS = "VILLAGERS"
     WOLVES    = "WOLVES"
 
 
 # ---------------------------------------------------------------------------
-# Dataclasses
+# Dataclass
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Player:
-    """Represents a player within a game.
+    """Rappresenta un giocatore all'interno di una partita.
 
-    Attributes:
-        player_id:  unique identifier of the player (e.g. socket_id).
-        username:   name displayed in chat.
-        role:       assigned role; None until roles are assigned.
-        alive:      True if the player is still in the game.
-        connected:  True if the WebSocket connection is active.
-        has_voted:  True if the player has already voted in the current round (day or night).
-        has_acted:  True if the player has already performed the special nighttime action
-                    (Seer only).
+    Attributi:
+        player_id:  identificatore univoco del giocatore (es. socket_id).
+        username:   nome visualizzato in chat.
+        role:       ruolo assegnato; None finché i ruoli non vengono assegnati.
+        alive:      True se il giocatore è ancora in partita.
+        connected:  True se la connessione WebSocket è attiva.
+        has_voted:  True se il giocatore ha già votato nel round corrente (giorno o notte).
+        has_acted:  True se il giocatore ha già svolto l'azione speciale notturna
+                    (solo Veggente).
     """
     player_id: str
     username:  str
@@ -68,7 +68,7 @@ class Player:
     alive:     bool           = True
     connected: bool           = True
     has_voted: bool           = False
-    has_acted: bool           = False  # special nighttime action (Seer)
+    has_acted: bool           = False  # azione notturna speciale (Veggente)
 
     def is_wolf(self) -> bool:
         return self.role is Role.WOLF
@@ -80,25 +80,25 @@ class Player:
         return self.role is Role.VILLAGER
 
     def reset_round_flags(self) -> None:
-        """Resets flags at the start of each new round/phase."""
+        """Reimposta i flag all'inizio di ogni nuovo round/fase."""
         self.has_voted = False
         self.has_acted = False
 
 
 @dataclass
 class GameState:
-    """Complete state of a game.
+    """Stato completo di una partita.
 
-    Attributes:
-        game_id:    unique identifier of the game (UUID).
-        phase:      current phase of the game loop.
-        round:      current round number. The game starts at round 0 during the
-                    opening night, then moves to round 1 on the first day.
-        players:    dictionary player_id → Player.
-        timer_end:  UNIX timestamp (float) of phase timer expiration.
-                    None in LOBBY and ENDED.
-        paused:     True if the game is paused (e.g. all wolves disconnected).
-    winner:     winner of the game; None until the game is finished.
+    Attributi:
+        game_id:    identificatore univoco della partita (UUID).
+        phase:      fase corrente del ciclo di gioco.
+        round:      numero del round corrente. La partita inizia al round 0 durante
+                    la notte iniziale, poi passa al round 1 nel primo giorno.
+        players:    dizionario player_id → Player.
+        timer_end:  timestamp UNIX (float) della scadenza del timer di fase.
+                    None in LOBBY e ENDED.
+        paused:     True se la partita è in pausa (es. tutti i lupi disconnessi).
+    winner:     vincitore della partita; None finché la partita non è conclusa.
     """
     game_id:   str
     phase:     Phase                     = Phase.LOBBY
@@ -113,7 +113,7 @@ class GameState:
     ready_player_ids: list[str]          = field(default_factory=list)
 
     # ------------------------------------------------------------------
-    # Utility helpers
+    # Funzioni ausiliarie
     # ------------------------------------------------------------------
 
     def alive_players(self) -> list[Player]:
@@ -123,7 +123,7 @@ class GameState:
         return [p for p in self.alive_players() if p.is_wolf()]
 
     def alive_villagers(self) -> list[Player]:
-        """Returns alive villagers + seer (i.e. non-wolves)."""
+        """Restituisce i villager vivi + il veggente (cioè i non-lupi)."""
         return [p for p in self.alive_players() if not p.is_wolf()]
 
     def connected_players(self) -> list[Player]:

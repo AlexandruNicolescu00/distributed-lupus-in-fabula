@@ -1,12 +1,11 @@
 """
-Unified Redis state access layer.
+Questo modulo contiene:
 
-This module now contains:
-  - `GameStateStore`: room-oriented snapshot storage used by `main.py`
-  - raw Redis helpers previously hosted in `services/redis_state.py`
+- GameStateStore: archivio di istantanee orientato alle stanze, utilizzato da main.py
+- funzioni ausiliarie di basso livello per l'accesso diretto a Redis
 
-The module therefore covers both realtime room sync and domain-level game
-state persistence, while keeping the existing `GameStateStore` API intact.
+Il modulo copre quindi sia la sincronizzazione in tempo reale delle stanze 
+sia la persistenza dello stato di gioco a livello di dominio.
 """
 
 import json
@@ -34,7 +33,7 @@ def _prefix() -> str:
     return get_settings().redis_channel_prefix
 
 
-# ── Legacy room snapshot keys used by main.py ────────────────────────────────
+# ── Chiavi legacy dello snapshot della stanza usate da main.py ──────────────
 
 def key_room_state(room_id: str) -> str:
     return f"{_prefix()}:state:{room_id}"
@@ -44,7 +43,7 @@ def key_room_players(room_id: str) -> str:
     return f"{_prefix()}:players:{room_id}"
 
 
-# ── Domain game-state keys merged from services/redis_state.py ───────────────
+# ── Chiavi dello stato di gioco del dominio ───────────────
 
 def key_state(game_id: str) -> str:
     return f"{_prefix()}:{game_id}:state"
