@@ -73,7 +73,7 @@ describe('chatStore — visibleMessages', () => {
     expect(channels).toContain('wolves')
   })
 
-  it('i morti vedono solo i messaggi dead', () => {
+  it('i morti vedono tutte le chat', () => {
     const chat = useChatStore()
     const game = useGameStore()
     game.phase  = PHASES.DAY
@@ -83,8 +83,11 @@ describe('chatStore — visibleMessages', () => {
     chat.messages = makeMessages()
 
     const visible = chat.visibleMessages
-    expect(visible.every(m => m.channel === 'dead')).toBe(true)
-    expect(visible).toHaveLength(1)
+    const channels = visible.map(m => m.channel)
+    expect(channels).toContain('global')
+    expect(channels).toContain('wolves')
+    expect(channels).toContain('dead')
+    expect(visible).toHaveLength(3)
   })
 
   it('i vivi non vedono i messaggi dead', () => {
@@ -193,14 +196,14 @@ describe('chatStore — canChat', () => {
     expect(chat.canChat).toBe(true)
   })
 
-  it('nessuno può chattare in LOBBY', () => {
+  it('tutti possono chattare in LOBBY', () => {
     const chat = useChatStore()
     const game = useGameStore()
     game.phase  = PHASES.LOBBY
     game.myRole = ROLES.VILLAGER
     game.players = [{ player_id: 'p1', username: 'Alice', role: ROLES.VILLAGER, alive: true }]
     game.currentPlayerId = 'p1'
-    expect(chat.canChat).toBe(false)
+    expect(chat.canChat).toBe(true)
   })
 
   it('nessuno può chattare in ENDED', () => {

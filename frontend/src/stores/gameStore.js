@@ -63,20 +63,20 @@ export const useGameStore = defineStore('game', () => {
   }, 1000)
 
   const secondsLeft = computed(() => {
-    if (!timerEnd.value) return 0
-    return Math.max(0, Math.ceil(timerEnd.value - currentTime.value))
+    if (!timerEnd.value) return null
+    return Math.max(0, Math.floor(timerEnd.value - currentTime.value))
   })
 
   const graceSecondsLeft = computed(() => {
     if (!graceDeadline.value) return 0
-    return Math.max(0, Math.ceil(graceDeadline.value - currentTime.value))
+    return Math.max(0, Math.floor(graceDeadline.value - currentTime.value))
   })
 
   const phaseDurations = { DAY: 10, VOTING: 60, NIGHT: 45 }
   const timerProgress = computed(() => {
     const total = phaseDurations[phase.value]
     if (!total || !timerEnd.value) return 0
-    return (secondsLeft.value / total) * 100
+    return Math.min(100, (secondsLeft.value / total) * 100)
   })
 
   const voteCount = computed(() => {
